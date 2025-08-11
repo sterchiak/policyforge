@@ -6,6 +6,7 @@ import Link from "next/link";
 import AppShell from "@/components/AppShell";
 import Card from "@/components/Card";
 import { api } from "@/lib/api";
+import { diffWords } from "diff";
 
 type VersionRow = { id: number; version: number; created_at: string };
 type DocumentDetail = {
@@ -43,6 +44,39 @@ function getFilenameFromDisposition(disposition?: string, fallback = "policy.htm
 
 const STATUS_OPTS = ["draft", "in_review", "approved", "published"] as const;
 
+// --- helpers for diff ---
+const stripHtml = (html: string) => html.replace(/<[^>]+>/g, " ");
+const escapeHtml = (s: string) =>
+  s.replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]!));
+
+function renderContentDiff(aHtml: string, bHtml: string) {
+  const parts = diffWords(stripHtml(aHtml), stripHtml(bHtml));
+  const html = parts
+    .map((p) => {
+      const val = escapeHtml(p.value);
+      if (p.added) return `<ins style="text-decoration: underline; background: #ecfeff">${val}</ins>`;
+      if (p.removed) return `<del style="text-decoration: line-through; background: #fee2e2">${val}</del>`;
+      return val;
+    })
+    .join("");
+  return html;
+}
+
+function diffParams(a: DraftParams, b: DraftParams) {
+  const toStr = (v: any) => (Array.isArray(v) ? v.join(", ") : String(v));
+  const keys: (keyof DraftParams)[] = [
+    "template_key",
+    "org_name",
+    "password_min_length",
+    "mfa_required_roles",
+    "log_retention_days",
+  ];
+  return keys
+    .map((k) => ({ key: k, before: a[k], after: b[k] }))
+    .filter((r) => JSON.stringify(r.before) !== JSON.stringify(r.after))
+    .map((r) => ({ key: r.key, before: toStr(r.before), after: toStr(r.after) }));
+}
+
 export default function DocumentDetailPage() {
   const params = useParams<{ id: string }>();
   const docId = Number(params.id);
@@ -57,21 +91,28 @@ export default function DocumentDetailPage() {
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState<typeof STATUS_OPTS[number]>("draft");
 
+  // compare state
+  const [compareA, setCompareA] = useState<number | "">("");
+  const [compareB, setCompareB] = useState<number | "">("");
+  const [paramChanges, setParamChanges] = useState<Array<{ key: string; before: string; after: string }>>([]);
+  const [contentDiffHtml, setContentDiffHtml] = useState<string | null>(null);
+
   const latestVersion = useMemo(() => doc?.latest_version ?? null, [doc]);
 
   // load document + latest version
   useEffect(() => {
     if (!docId) return;
-    api.get<DocumentDetail>(`/v1/documents/${docId}`)
-      .then(r => {
+    api
+      .get<DocumentDetail>(`/v1/documents/${docId}`)
+      .then((r) => {
         setDoc(r.data);
         setTitle(r.data.title);
         setStatus((r.data.status as any) || "draft");
         const latest = r.data.latest_version || (r.data.versions.at(-1)?.version ?? 1);
         return api.get<VersionDetail>(`/v1/documents/${docId}/versions/${latest}`);
       })
-      .then(r => setCurrent(r.data))
-      .catch(e => setErr(e.message));
+      .then((r) => setCurrent(r.data))
+      .catch((e) => setErr(e.message));
   }, [docId]);
 
   const loadVersion = async (v: number) => {
@@ -97,7 +138,11 @@ export default function DocumentDetailPage() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       const filename = getFilenameFromDisposition(res.headers["content-disposition"], `${doc?.title}.html`);
-      a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
       window.URL.revokeObjectURL(url);
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e.message);
@@ -116,7 +161,11 @@ export default function DocumentDetailPage() {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       const filename = getFilenameFromDisposition(res.headers["content-disposition"], `${doc?.title}.pdf`);
-      a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
       window.URL.revokeObjectURL(url);
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e.message);
@@ -126,37 +175,36 @@ export default function DocumentDetailPage() {
   };
 
   const onDownloadDocx = async () => {
-  if (!current) return;
-  setErr(null);
-  setLoading(true);
-  try {
-    const res = await api.post("/v1/policies/export/docx", current.params, { responseType: "blob" });
-    const blob = new Blob(
-      [res.data],
-      { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }
-    );
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const filename = getFilenameFromDisposition(
-      res.headers["content-disposition"],
-      `${doc?.title}.docx`
-    );
-    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
-    window.URL.revokeObjectURL(url);
-  } catch (e: any) {
-    setErr(e?.response?.data?.detail || e.message);
-  } finally {
-    setLoading(false);
-  }
-};
+    if (!current) return;
+    setErr(null);
+    setLoading(true);
+    try {
+      const res = await api.post("/v1/policies/export/docx", current.params, { responseType: "blob" });
+      const blob = new Blob([res.data], {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const filename = getFilenameFromDisposition(res.headers["content-disposition"], `${doc?.title}.docx`);
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail || e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const onSaveMeta = async () => {
     if (!doc) return;
     setErr(null);
     setLoading(true);
     try {
-      const res = await api.patch<DocumentDetail>(`/v1/documents/${doc.id}`, { title, status });
-      // quick refresh of doc meta
+      await api.patch<DocumentDetail>(`/v1/documents/${doc.id}`, { title, status });
       const meta = await api.get<DocumentDetail>(`/v1/documents/${docId}`);
       setDoc(meta.data);
     } catch (e: any) {
@@ -186,7 +234,6 @@ export default function DocumentDetailPage() {
     setLoading(true);
     try {
       await api.delete(`/v1/documents/${docId}/versions/${v}`);
-      // reload doc + maybe change current
       const meta = await api.get<DocumentDetail>(`/v1/documents/${docId}`);
       setDoc(meta.data);
       const latest = meta.data.latest_version || (meta.data.versions.at(-1)?.version ?? 0);
@@ -208,11 +255,9 @@ export default function DocumentDetailPage() {
     setErr(null);
     setLoading(true);
     try {
-      const res = await api.post(`/v1/documents/${docId}/versions/${v}/rollback`, {});
-      // load the newly created latest version
-      const vres = await api.get<VersionDetail>(`/v1/documents/${docId}/versions/${(res.data as any).version}`);
+      const res = await api.post<{ version: number }>(`/v1/documents/${docId}/versions/${v}/rollback`, {});
+      const vres = await api.get<VersionDetail>(`/v1/documents/${docId}/versions/${res.data.version}`);
       setCurrent(vres.data);
-      // refresh doc meta
       const meta = await api.get<DocumentDetail>(`/v1/documents/${docId}`);
       setDoc(meta.data);
     } catch (e: any) {
@@ -227,6 +272,29 @@ export default function DocumentDetailPage() {
     router.push(`/policies?doc=${docId}&v=${version}`);
   };
 
+  const runCompare = async () => {
+    setErr(null);
+    setParamChanges([]);
+    setContentDiffHtml(null);
+    if (compareA === "" || compareB === "" || compareA === compareB) {
+      setErr("Pick two different versions to compare.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const [aRes, bRes] = await Promise.all([
+        api.get<VersionDetail>(`/v1/documents/${docId}/versions/${compareA}`),
+        api.get<VersionDetail>(`/v1/documents/${docId}/versions/${compareB}`),
+      ]);
+      setParamChanges(diffParams(aRes.data.params, bRes.data.params));
+      setContentDiffHtml(renderContentDiff(aRes.data.html, bRes.data.html));
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail || e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <AppShell>
       {!doc ? (
@@ -237,12 +305,18 @@ export default function DocumentDetailPage() {
             <div>
               <h1 className="text-2xl font-semibold">{doc.title}</h1>
               <p className="text-xs text-gray-600">
-                Doc #{doc.id} • Template: {doc.template_key} • Updated {new Date(doc.updated_at).toLocaleString()}
+                Doc #{doc.id} • Template: {doc.template_key} • Updated{" "}
+                {new Date(doc.updated_at).toLocaleString()}
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <Link href="/documents" className="rounded border px-3 py-1 text-sm">Back to Documents</Link>
-              <button onClick={onDeleteDoc} className="rounded border border-red-600 px-3 py-1 text-sm text-red-700">
+              <Link href="/documents" className="rounded border px-3 py-1 text-sm">
+                Back to Documents
+              </Link>
+              <button
+                onClick={onDeleteDoc}
+                className="rounded border border-red-600 px-3 py-1 text-sm text-red-700"
+              >
                 Delete
               </button>
             </div>
@@ -260,22 +334,30 @@ export default function DocumentDetailPage() {
               value={status}
               onChange={(e) => setStatus(e.target.value as any)}
             >
-              {STATUS_OPTS.map(s => <option key={s} value={s}>{s}</option>)}
+              {STATUS_OPTS.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
             </select>
             <div className="md:col-span-2">
-              <button onClick={onSaveMeta} className="rounded bg-black px-4 py-2 text-white">Save Changes</button>
+              <button onClick={onSaveMeta} className="rounded bg-black px-4 py-2 text-white">
+                Save Changes
+              </button>
             </div>
           </div>
 
           <div className="grid gap-6 md:grid-cols-[260px_1fr]">
             <Card title="Versions">
               <div className="space-y-2">
-                {doc.versions.map(v => (
+                {doc.versions.map((v) => (
                   <div key={v.id} className="flex items-center justify-between gap-2">
                     <button
                       onClick={() => loadVersion(v.version)}
                       className={`flex-1 rounded border px-3 py-2 text-left text-sm ${
-                        current?.version === v.version ? "border-black" : "border-gray-200 hover:border-gray-300"
+                        current?.version === v.version
+                          ? "border-black"
+                          : "border-gray-200 hover:border-gray-300"
                       }`}
                       title={`Open v${v.version}`}
                     >
@@ -298,36 +380,117 @@ export default function DocumentDetailPage() {
                   </div>
                 ))}
               </div>
+
+              {/* Compare picker */}
+              <div className="mt-4 rounded-lg border p-3">
+                <div className="mb-2 text-sm font-semibold">Compare Versions</div>
+                <div className="flex items-center gap-2">
+                  <select
+                    className="w-full rounded border px-2 py-1 text-sm"
+                    value={compareA}
+                    onChange={(e) => setCompareA(Number(e.target.value) as number)}
+                  >
+                    <option value="">From…</option>
+                    {doc.versions.map((v) => (
+                      <option key={`a-${v.id}`} value={v.version}>
+                        v{v.version}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-sm text-gray-500">→</span>
+                  <select
+                    className="w-full rounded border px-2 py-1 text-sm"
+                    value={compareB}
+                    onChange={(e) => setCompareB(Number(e.target.value) as number)}
+                  >
+                    <option value="">To…</option>
+                    {doc.versions.map((v) => (
+                      <option key={`b-${v.id}`} value={v.version}>
+                        v{v.version}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  onClick={runCompare}
+                  className="mt-2 w-full rounded border px-2 py-1 text-sm"
+                >
+                  Compare
+                </button>
+              </div>
             </Card>
 
-            <Card title={`Preview ${current ? `(v${current.version})` : ""}`}>
-              {err && <p className="mb-3 text-sm text-red-600">{err}</p>}
-              {!current ? (
-                <p className="text-sm text-gray-700">Select a version to preview.</p>
-              ) : (
-                <>
-                  <div className="mb-3 flex flex-wrap gap-2">
-                    <button onClick={() => onOpenInEditor()} className="rounded border px-3 py-1.5 text-sm">
-                      Open in Editor
-                    </button>
-                    <button onClick={onDownloadHtml} disabled={loading} className="rounded border px-3 py-1.5 text-sm">
-                      Download HTML
-                    </button>
-                    <button onClick={onDownloadPdf} disabled={loading} className="rounded border px-3 py-1.5 text-sm">
-                      Download PDF
-                    </button>
-                    <button onClick={onDownloadDocx} disabled={loading} className="rounded border px-3 py-1.5 text-sm">
-                      Download DOCX
-                    </button>
+            <div className="space-y-6">
+              <Card title={`Preview ${current ? `(v${current.version})` : ""}`}>
+                {err && <p className="mb-3 text-sm text-red-600">{err}</p>}
+                {!current ? (
+                  <p className="text-sm text-gray-700">Select a version to preview.</p>
+                ) : (
+                  <>
+                    <div className="mb-3 flex flex-wrap gap-2">
+                      <button onClick={() => onOpenInEditor()} className="rounded border px-3 py-1.5 text-sm">
+                        Open in Editor
+                      </button>
+                      <button onClick={onDownloadHtml} disabled={loading} className="rounded border px-3 py-1.5 text-sm">
+                        Download HTML
+                      </button>
+                      <button onClick={onDownloadPdf} disabled={loading} className="rounded border px-3 py-1.5 text-sm">
+                        Download PDF
+                      </button>
+                      <button onClick={onDownloadDocx} disabled={loading} className="rounded border px-3 py-1.5 text-sm">
+                        Download DOCX
+                      </button>
+                    </div>
+                    <div
+                      className="prose max-w-none"
+                      dangerouslySetInnerHTML={{ __html: current.html }}
+                    />
+                  </>
+                )}
+              </Card>
 
-                  </div>
-                  <div
-                    className="prose max-w-none"
-                    dangerouslySetInnerHTML={{ __html: current.html }}
-                  />
-                </>
+              {(paramChanges.length > 0 || contentDiffHtml) && (
+                <Card title="Comparison">
+                  {paramChanges.length > 0 ? (
+                    <>
+                      <h3 className="mb-2 text-sm font-semibold">Parameter changes</h3>
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                          <thead>
+                            <tr className="text-left text-gray-600">
+                              <th className="py-1 pr-4">Field</th>
+                              <th className="py-1 pr-4">From</th>
+                              <th className="py-1">To</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y">
+                            {paramChanges.map((c) => (
+                              <tr key={c.key}>
+                                <td className="py-1 pr-4 font-medium">{c.key.replace(/_/g, " ")}</td>
+                                <td className="py-1 pr-4 text-gray-700">{c.before || "—"}</td>
+                                <td className="py-1 text-gray-900">{c.after || "—"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-sm text-gray-700">No parameter changes.</p>
+                  )}
+
+                  {contentDiffHtml && (
+                    <>
+                      <h3 className="mt-4 text-sm font-semibold">Content diff</h3>
+                      <div
+                        className="prose max-w-none whitespace-pre-wrap"
+                        dangerouslySetInnerHTML={{ __html: contentDiffHtml }}
+                      />
+                    </>
+                  )}
+                </Card>
               )}
-            </Card>
+            </div>
           </div>
         </>
       )}
