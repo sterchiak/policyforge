@@ -11,8 +11,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from apps.api.app.db import get_db
-from apps.api.app.models import PolicyDocument, PolicyVersion, PolicyComment, PolicyApproval
+from apps.api.app.models import (
+    PolicyDocument,
+    PolicyVersion,
+    PolicyComment,
+    PolicyApproval,
+)
 from apps.api.routes.policies import DraftRequest, render_html, TEMPLATES
+from apps.api.app.auth import get_current_user, require_roles, UserPrincipal
 
 router = APIRouter(prefix="/v1/documents", tags=["documents"])
 
@@ -69,7 +75,7 @@ class CommentOut(BaseModel):
     created_at: str
 
 
-# --- NEW: Approvals I/O ---
+# Approvals I/O
 class ApprovalIn(BaseModel):
     reviewer: str
     version: Optional[int] = None
@@ -121,8 +127,19 @@ def _doc_to_out(db: Session, d: PolicyDocument) -> DocumentOut:
 # -----------------------
 # Document & Version routes
 # -----------------------
-@router.post("", response_model=DocumentOut)
-def create_document(req: DraftRequest, db: Session = Depends(get_db)):
+@router.post(
+    "",
+    response_model=DocumentOut,
+    dependencies=[Depends(require_roles("owner", "admin", "editor"))],
+)
+def create_document(
+    req: DraftRequest,
+    db: Session = Depends(get_db),
+    user: UserPrincipal = Depends(get_current_user),
+):
+    # (Optional) org scoping:
+    # org_id = user.orgId
+
     if req.template_key not in {t.key for t in TEMPLATES}:
         raise HTTPException(status_code=400, detail="Unknown template_key")
 
@@ -132,7 +149,12 @@ def create_document(req: DraftRequest, db: Session = Depends(get_db)):
         req.template_key.replace("_", " ").title(),
     )
 
-    doc = PolicyDocument(template_key=req.template_key, title=title, status="draft")
+    doc = PolicyDocument(
+        template_key=req.template_key,
+        title=title,
+        status="draft",
+        # org_id=org_id,
+    )
     db.add(doc)
     db.flush()  # assigns doc.id
 
@@ -232,11 +254,55 @@ def get_latest_version(doc_id: int, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/{doc_id}/versions", response_model=VersionOut)
-def create_version(doc_id: int, req: DraftRequest, db: Session = Depends(get_db)):
+@router.get("/{doc_id}/versions/{version}", response_model=VersionDetailOut)
+def get_version(doc_id: int, version: int, db: Session = Depends(get_db)):
+    v = (
+        db.query(PolicyVersion)
+        .filter(PolicyVersion.document_id == doc_id, PolicyVersion.version == version)
+        .first()
+    )
+    if not v:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    try:
+        payload = json.loads(v.params_json)
+        params = DraftRequest.model_validate(payload)
+    except Exception:
+        params = DraftRequest(
+            template_key="access_control_policy",
+            org_name="Unknown",
+            password_min_length=14,
+            mfa_required_roles=["Admin"],
+            log_retention_days=90,
+        )
+
+    return VersionDetailOut(
+        id=v.id,
+        version=v.version,
+        created_at=v.created_at.isoformat(),
+        html=v.html,
+        params=params,
+    )
+
+
+@router.post(
+    "/{doc_id}/versions",
+    response_model=VersionOut,
+    dependencies=[Depends(require_roles("owner", "admin", "editor"))],
+)
+def create_version(
+    doc_id: int,
+    req: DraftRequest,
+    db: Session = Depends(get_db),
+    user: UserPrincipal = Depends(get_current_user),
+):
     d = db.get(PolicyDocument, doc_id)
     if not d:
         raise HTTPException(status_code=404, detail="Document not found")
+    # Optional org check:
+    # if d.org_id and d.org_id != user.orgId:
+    #     raise HTTPException(status_code=403, detail="Document belongs to another org")
+
     if req.template_key != d.template_key:
         raise HTTPException(
             status_code=400,
@@ -262,8 +328,17 @@ def create_version(doc_id: int, req: DraftRequest, db: Session = Depends(get_db)
     )
 
 
-@router.post("/{doc_id}/versions/{version}/rollback", response_model=VersionOut)
-def rollback_to_version(doc_id: int, version: int, db: Session = Depends(get_db)):
+@router.post(
+    "/{doc_id}/versions/{version}/rollback",
+    response_model=VersionOut,
+    dependencies=[Depends(require_roles("owner", "admin", "editor"))],
+)
+def rollback_to_version(
+    doc_id: int,
+    version: int,
+    db: Session = Depends(get_db),
+    user: UserPrincipal = Depends(get_current_user),
+):
     base = (
         db.query(PolicyVersion)
         .filter(PolicyVersion.document_id == doc_id, PolicyVersion.version == version)
@@ -299,39 +374,17 @@ def rollback_to_version(doc_id: int, version: int, db: Session = Depends(get_db)
     return VersionOut(id=v.id, version=v.version, created_at=v.created_at.isoformat())
 
 
-@router.get("/{doc_id}/versions/{version}", response_model=VersionDetailOut)
-def get_version(doc_id: int, version: int, db: Session = Depends(get_db)):
-    v = (
-        db.query(PolicyVersion)
-        .filter(PolicyVersion.document_id == doc_id, PolicyVersion.version == version)
-        .first()
-    )
-    if not v:
-        raise HTTPException(status_code=404, detail="Version not found")
-
-    try:
-        payload = json.loads(v.params_json)
-        params = DraftRequest.model_validate(payload)
-    except Exception:
-        params = DraftRequest(
-            template_key="access_control_policy",
-            org_name="Unknown",
-            password_min_length=14,
-            mfa_required_roles=["Admin"],
-            log_retention_days=90,
-        )
-
-    return VersionDetailOut(
-        id=v.id,
-        version=v.version,
-        created_at=v.created_at.isoformat(),
-        html=v.html,
-        params=params,
-    )
-
-
-@router.patch("/{doc_id}", response_model=DocumentOut)
-def update_document(doc_id: int, payload: DocumentUpdate, db: Session = Depends(get_db)):
+@router.patch(
+    "/{doc_id}",
+    response_model=DocumentOut,
+    dependencies=[Depends(require_roles("owner", "admin", "editor"))],
+)
+def update_document(
+    doc_id: int,
+    payload: DocumentUpdate,
+    db: Session = Depends(get_db),
+    user: UserPrincipal = Depends(get_current_user),
+):
     d = db.get(PolicyDocument, doc_id)
     if not d:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -347,18 +400,36 @@ def update_document(doc_id: int, payload: DocumentUpdate, db: Session = Depends(
     return _doc_to_out(db, d)
 
 
-@router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_document(doc_id: int, db: Session = Depends(get_db)):
+@router.delete(
+    "/{doc_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_roles("owner", "admin"))],
+)
+def delete_document(
+    doc_id: int,
+    db: Session = Depends(get_db),
+    user: UserPrincipal = Depends(get_current_user),
+):
     d = db.get(PolicyDocument, doc_id)
     if not d:
         raise HTTPException(status_code=404, detail="Document not found")
+    # If your FK is not ON DELETE CASCADE, manually delete versions/comments/approvals here.
     db.delete(d)
     db.commit()
     return None
 
 
-@router.delete("/{doc_id}/versions/{version}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_version(doc_id: int, version: int, db: Session = Depends(get_db)):
+@router.delete(
+    "/{doc_id}/versions/{version}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_roles("owner", "admin"))],
+)
+def delete_version(
+    doc_id: int,
+    version: int,
+    db: Session = Depends(get_db),
+    user: UserPrincipal = Depends(get_current_user),
+):
     v = (
         db.query(PolicyVersion)
         .filter(PolicyVersion.document_id == doc_id, PolicyVersion.version == version)
@@ -397,11 +468,21 @@ def list_comments(doc_id: int, version: Optional[int] = None, db: Session = Depe
     ]
 
 
-@router.post("/{doc_id}/comments", response_model=CommentOut, status_code=201)
-def create_comment(doc_id: int, payload: CommentIn, db: Session = Depends(get_db)):
+@router.post(
+    "/{doc_id}/comments",
+    response_model=CommentOut,
+    status_code=201,
+    dependencies=[Depends(require_roles("owner", "admin", "editor", "viewer", "approver"))],
+)
+def create_comment(
+    doc_id: int,
+    payload: CommentIn,
+    db: Session = Depends(get_db),
+    user: UserPrincipal = Depends(get_current_user),
+):
     d = db.get(PolicyDocument, doc_id)
     if not d:
-        raise HTTPException(404, "Document not found")
+        raise HTTPException(status_code=404, detail="Document not found")
 
     if payload.version is not None:
         exists = (
@@ -413,7 +494,7 @@ def create_comment(doc_id: int, payload: CommentIn, db: Session = Depends(get_db
             .first()
         )
         if not exists:
-            raise HTTPException(400, "Version not found")
+            raise HTTPException(status_code=400, detail="Version not found")
 
     c = PolicyComment(
         document_id=doc_id,
@@ -459,11 +540,21 @@ def list_approvals(doc_id: int, version: Optional[int] = None, db: Session = Dep
     ]
 
 
-@router.post("/{doc_id}/approvals", response_model=ApprovalOut, status_code=201)
-def create_approval(doc_id: int, payload: ApprovalIn, db: Session = Depends(get_db)):
+@router.post(
+    "/{doc_id}/approvals",
+    response_model=ApprovalOut,
+    status_code=201,
+    dependencies=[Depends(require_roles("owner", "admin", "editor"))],
+)
+def create_approval(
+    doc_id: int,
+    payload: ApprovalIn,
+    db: Session = Depends(get_db),
+    user: UserPrincipal = Depends(get_current_user),
+):
     d = db.get(PolicyDocument, doc_id)
     if not d:
-        raise HTTPException(404, "Document not found")
+        raise HTTPException(status_code=404, detail="Document not found")
 
     if payload.version is not None:
         exists = (
@@ -472,7 +563,7 @@ def create_approval(doc_id: int, payload: ApprovalIn, db: Session = Depends(get_
             .first()
         )
         if not exists:
-            raise HTTPException(400, "Version not found")
+            raise HTTPException(status_code=400, detail="Version not found")
 
     a = PolicyApproval(
         document_id=doc_id,
@@ -497,13 +588,23 @@ def create_approval(doc_id: int, payload: ApprovalIn, db: Session = Depends(get_
     )
 
 
-@router.patch("/{doc_id}/approvals/{approval_id}", response_model=ApprovalOut)
-def decide_approval(doc_id: int, approval_id: int, payload: ApprovalUpdate, db: Session = Depends(get_db)):
+@router.patch(
+    "/{doc_id}/approvals/{approval_id}",
+    response_model=ApprovalOut,
+    dependencies=[Depends(require_roles("owner", "admin", "approver"))],
+)
+def decide_approval(
+    doc_id: int,
+    approval_id: int,
+    payload: ApprovalUpdate,
+    db: Session = Depends(get_db),
+    user: UserPrincipal = Depends(get_current_user),
+):
     a = db.get(PolicyApproval, approval_id)
     if not a or a.document_id != doc_id:
-        raise HTTPException(404, "Approval not found")
+        raise HTTPException(status_code=404, detail="Approval not found")
 
-    a.status = payload.status  # approved / rejected
+    a.status = payload.status  # "approved" / "rejected"
     if payload.note is not None:
         a.note = payload.note.strip() or None
     if payload.reviewer:
@@ -525,19 +626,9 @@ def decide_approval(doc_id: int, approval_id: int, payload: ApprovalUpdate, db: 
     )
 
 
-@router.get("/{doc_id}/approvals/summary")
-def approvals_summary(doc_id: int, version: Optional[int] = None, db: Session = Depends(get_db)):
-    q = db.query(PolicyApproval.status, func.count(PolicyApproval.id)).filter(PolicyApproval.document_id == doc_id)
-    if version is not None:
-        q = q.filter(PolicyApproval.version == version)
-    rows = q.group_by(PolicyApproval.status).all()
-    summary: Dict[str, int] = {status: count for status, count in rows}
-    return {
-        "pending": summary.get("pending", 0),
-        "approved": summary.get("approved", 0),
-        "rejected": summary.get("rejected", 0),
-    }
-
+# -----------------------
+# Approvals summaries
+# -----------------------
 @router.get("/approvals/summary_by_doc")
 def approvals_summary_by_doc(db: Session = Depends(get_db)):
     rows = (
@@ -545,15 +636,15 @@ def approvals_summary_by_doc(db: Session = Depends(get_db)):
         .group_by(PolicyApproval.document_id, PolicyApproval.status)
         .all()
     )
-    # [{document_id, pending, approved, rejected}, ...]
     by_doc: Dict[int, Dict[str, int]] = {}
-    for doc_id, status, count in rows:
+    for doc_id, st, count in rows:
         rec = by_doc.setdefault(doc_id, {"pending": 0, "approved": 0, "rejected": 0})
-        rec[status] = count
+        rec[st] = count
     return [
         {"document_id": doc_id, "pending": v["pending"], "approved": v["approved"], "rejected": v["rejected"]}
         for doc_id, v in by_doc.items()
     ]
+
 
 @router.get("/approvals/summary_all")
 def approvals_summary_all(db: Session = Depends(get_db)):
@@ -562,7 +653,7 @@ def approvals_summary_all(db: Session = Depends(get_db)):
         .group_by(PolicyApproval.status)
         .all()
     )
-    d: Dict[str, int] = {status: count for status, count in rows}
+    d: Dict[str, int] = {st: count for st, count in rows}
     return {
         "pending": d.get("pending", 0),
         "approved": d.get("approved", 0),

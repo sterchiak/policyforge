@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import { useSession } from "next-auth/react";
 import AppShell from "@/components/AppShell";
 import Card from "@/components/Card";
 import { api } from "@/lib/api";
@@ -101,6 +102,9 @@ export default function DocumentDetailPage() {
   const params = useParams<{ id: string }>();
   const docId = Number(params.id);
   const router = useRouter();
+
+  const { data: session } = useSession();
+  const isAuthed = Boolean(session?.user);
 
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
   const [current, setCurrent] = useState<VersionDetail | null>(null);
@@ -392,9 +396,8 @@ export default function DocumentDetailPage() {
     try {
       await api.patch<Approval>(`/v1/documents/${docId}/approvals/${approvalId}`, { status, note });
       await refreshApprovals();
-      // Optional: nudge doc status locally
       if (status === "approved") setStatus("approved");
-      if (status === "rejected" && status !== "approved") setStatus("rejected");
+      if (status === "rejected") setStatus("rejected");
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e.message);
     } finally {
@@ -423,6 +426,7 @@ export default function DocumentDetailPage() {
               <button
                 onClick={onDeleteDoc}
                 className="rounded border border-red-600 px-3 py-1 text-sm text-red-700"
+                disabled={!isAuthed || loading}
               >
                 Delete
               </button>
@@ -435,11 +439,13 @@ export default function DocumentDetailPage() {
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Title"
+              disabled={!isAuthed}
             />
             <select
               className="rounded border px-3 py-2"
               value={status}
               onChange={(e) => setStatus(e.target.value as any)}
+              disabled={!isAuthed}
             >
               {STATUS_OPTS.map((s) => (
                 <option key={s} value={s}>
@@ -448,14 +454,18 @@ export default function DocumentDetailPage() {
               ))}
             </select>
             <div className="md:col-span-2">
-              <button onClick={onSaveMeta} className="rounded bg-black px-4 py-2 text-white">
+              <button
+                onClick={onSaveMeta}
+                disabled={!isAuthed || loading}
+                className="rounded bg-black px-4 py-2 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 Save Changes
               </button>
             </div>
           </div>
 
           <div className="grid gap-6 md:grid-cols-[260px_1fr]">
-            {/* LEFT: Versions + Compare + Approvals Request */}
+            {/* LEFT: Versions + Compare + Request Approval */}
             <div className="space-y-6">
               <Card title="Versions">
                 <div className="space-y-2">
@@ -472,15 +482,17 @@ export default function DocumentDetailPage() {
                       </button>
                       <button
                         onClick={() => onRollback(v.version)}
-                        className="rounded border px-2 py-1 text-xs"
+                        className="rounded border px-2 py-1 text-xs disabled:opacity-50"
                         title="Create new version from this"
+                        disabled={!isAuthed || loading}
                       >
                         Rollback
                       </button>
                       <button
                         onClick={() => onDeleteVersion(v.version)}
-                        className="rounded border border-red-600 px-2 py-1 text-xs text-red-700"
+                        className="rounded border border-red-600 px-2 py-1 text-xs text-red-700 disabled:opacity-50"
                         title="Delete version"
+                        disabled={!isAuthed || loading}
                       >
                         Delete
                       </button>
@@ -496,9 +508,7 @@ export default function DocumentDetailPage() {
                       <select
                         className="w-full rounded border px-2 py-1 text-sm"
                         value={compareA}
-                        onChange={(e) =>
-                          setCompareA(e.target.value === "" ? "" : Number(e.target.value))
-                        }
+                        onChange={(e) => setCompareA(e.target.value === "" ? "" : Number(e.target.value))}
                       >
                         <option value="">From…</option>
                         {doc.versions.map((v) => (
@@ -511,9 +521,7 @@ export default function DocumentDetailPage() {
                       <select
                         className="w-full rounded border px-2 py-1 text-sm"
                         value={compareB}
-                        onChange={(e) =>
-                          setCompareB(e.target.value === "" ? "" : Number(e.target.value))
-                        }
+                        onChange={(e) => setCompareB(e.target.value === "" ? "" : Number(e.target.value))}
                       >
                         <option value="">To…</option>
                         {doc.versions.map((v) => (
@@ -538,6 +546,7 @@ export default function DocumentDetailPage() {
                       className="h-4 w-4"
                       checked={onlyCurrentApprovals}
                       onChange={(e) => setOnlyCurrentApprovals(e.target.checked)}
+                      disabled={!isAuthed}
                     />
                     Only for current version {current ? `(v${current.version})` : ""}
                   </label>
@@ -546,14 +555,20 @@ export default function DocumentDetailPage() {
                     placeholder="Reviewer (name or email)"
                     value={newReviewer}
                     onChange={(e) => setNewReviewer(e.target.value)}
+                    disabled={!isAuthed}
                   />
                   <textarea
                     className="mb-2 h-20 w-full rounded border px-2 py-1 text-sm"
                     placeholder="Optional note"
                     value={newApprovalNote}
                     onChange={(e) => setNewApprovalNote(e.target.value)}
+                    disabled={!isAuthed}
                   />
-                  <button onClick={onCreateApproval} className="w-full rounded border px-2 py-1 text-sm">
+                  <button
+                    onClick={onCreateApproval}
+                    disabled={!isAuthed || !newReviewer.trim() || loading}
+                    className="w-full rounded border px-2 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
                     Send Request
                   </button>
                 </div>
@@ -569,7 +584,11 @@ export default function DocumentDetailPage() {
                 ) : (
                   <>
                     <div className="mb-3 flex flex-wrap gap-2">
-                      <button onClick={() => onOpenInEditor()} className="rounded border px-3 py-1.5 text-sm">
+                      <button
+                        onClick={() => onOpenInEditor()}
+                        className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
+                        disabled={!isAuthed}
+                      >
                         Open in Editor
                       </button>
                       <button onClick={onDownloadHtml} disabled={loading} className="rounded border px-3 py-1.5 text-sm">
@@ -582,7 +601,10 @@ export default function DocumentDetailPage() {
                         Download DOCX
                       </button>
                     </div>
-                    <div className="prose max-w-none" dangerouslySetInnerHTML={{ __html: current.html }} />
+                    <div
+                      className="prose max-w-none prose-headings:text-gray-900 prose-p:text-gray-900"
+                      dangerouslySetInnerHTML={{ __html: current.html }}
+                    />
                   </>
                 )}
               </Card>
@@ -666,12 +688,14 @@ export default function DocumentDetailPage() {
                     placeholder="Your name (optional)"
                     value={commentAuthor}
                     onChange={(e) => setCommentAuthor(e.target.value)}
+                    disabled={!isAuthed}
                   />
                   <textarea
                     className="h-24 w-full rounded border px-3 py-2 text-sm"
                     placeholder="Add a comment…"
                     value={newComment}
                     onChange={(e) => setNewComment(e.target.value)}
+                    disabled={!isAuthed}
                   />
                   <button
                     onClick={async () => {
@@ -693,8 +717,8 @@ export default function DocumentDetailPage() {
                         setLoading(false);
                       }
                     }}
-                    disabled={loading || !newComment.trim()}
-                    className="rounded border px-3 py-1.5 text-sm"
+                    disabled={!isAuthed || loading || !newComment.trim()}
+                    className="rounded border px-3 py-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Add Comment
                   </button>
@@ -709,10 +733,7 @@ export default function DocumentDetailPage() {
                       type="checkbox"
                       className="h-4 w-4"
                       checked={onlyCurrentApprovals}
-                      onChange={async (e) => {
-                        setOnlyCurrentApprovals(e.target.checked);
-                        // refresh happens via effect
-                      }}
+                      onChange={(e) => setOnlyCurrentApprovals(e.target.checked)}
                     />
                     Only show for current version {current ? `(v${current.version})` : ""}
                   </label>
@@ -754,13 +775,15 @@ export default function DocumentDetailPage() {
                           <div className="mt-2 flex gap-2">
                             <button
                               onClick={() => onDecideApproval(a.id, "approved")}
-                              className="rounded border px-2 py-1 text-xs"
+                              className="rounded border px-2 py-1 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                              disabled={!isAuthed || loading}
                             >
                               Approve
                             </button>
                             <button
                               onClick={() => onDecideApproval(a.id, "rejected")}
-                              className="rounded border px-2 py-1 text-xs"
+                              className="rounded border px-2 py-1 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                              disabled={!isAuthed || loading}
                             >
                               Reject
                             </button>

@@ -2,51 +2,60 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, FileText, Settings, FolderClosed as Folder } from "lucide-react";
+import { LayoutDashboard, FileText, Folder, Settings } from "lucide-react";
 
-const nav = [
+type Item = {
+  href: string;
+  label: string;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+};
+
+const NAV: Item[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/policies",  label: "Policies",  icon: FileText },
   { href: "/documents", label: "Documents", icon: Folder },
   { href: "/settings",  label: "Settings",  icon: Settings },
 ];
 
-export default function Sidebar() {
+function NavItem({ href, label, icon: Icon }: Item) {
   const pathname = usePathname();
+  const active = pathname === href || pathname.startsWith(`${href}/`);
+
+  const base = "group flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors";
+  const linkClass = active
+    ? `${base} bg-gray-900 text-white shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-300`
+    : `${base} text-gray-900 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-200`;
+
+  const iconClass = active
+    ? "h-4 w-4 text-white"
+    : "h-4 w-4 text-gray-700 group-hover:text-gray-900";
+
+  const labelClass = active
+    ? "font-medium text-white"
+    : "font-medium text-gray-900";
 
   return (
-    <div className="flex h-screen flex-col">
-      <div className="flex h-14 items-center border-b px-4">
-        <Link href="/" className="text-base font-semibold text-gray-900">
-          PolicyForge
-        </Link>
-      </div>
+    <Link
+      href={href}
+      className={linkClass}
+      aria-current={active ? "page" : undefined}
+    >
+      <Icon className={iconClass} />
+      <span className={labelClass}>{label}</span>
+    </Link>
+  );
+}
 
-      <nav className="flex-1 p-3">
-        <ul className="space-y-1">
-          {nav.map((item) => {
-            const Icon = item.icon;
-            const active = pathname?.startsWith(item.href);
-            return (
-              <li key={item.href}>
-                <Link
-                  href={item.href}
-                  className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm ${
-                    active
-                      ? "bg-gray-900 text-white"
-                      : "text-gray-800 hover:bg-gray-100"
-                  }`}
-                >
-                  <Icon size={18} />
-                  <span>{item.label}</span>
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
+export default function Sidebar() {
+  return (
+    <aside className="w-56 shrink-0 border-r bg-white p-3 text-gray-900">
+      <nav className="space-y-1">
+        {NAV.map((item) => (
+          <NavItem key={item.href} {...item} />
+        ))}
       </nav>
 
-      <div className="border-t p-3 text-xs text-gray-500">v0.1.0</div>
-    </div>
+      <div className="mt-auto p-2 text-xs text-gray-500">v0.1.0</div>
+    </aside>
   );
 }
