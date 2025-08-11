@@ -630,18 +630,50 @@ def decide_approval(
 # Approvals summaries
 # -----------------------
 @router.get("/approvals/summary_by_doc")
-def approvals_summary_by_doc(db: Session = Depends(get_db)):
-    rows = (
-        db.query(PolicyApproval.document_id, PolicyApproval.status, func.count(PolicyApproval.id))
-        .group_by(PolicyApproval.document_id, PolicyApproval.status)
-        .all()
+def approvals_summary_by_doc(scope: str = "any", db: Session = Depends(get_db)):
+    """
+    Return counts of approvals by document.
+
+    scope="any"   → counts across all versions (existing behavior)
+    scope="latest"→ counts only for each document's latest version
+    """
+    if scope not in ("any", "latest"):
+        raise HTTPException(status_code=400, detail="Invalid scope")
+
+    base = db.query(
+        PolicyApproval.document_id,
+        PolicyApproval.status,
+        func.count(PolicyApproval.id),
     )
+
+    if scope == "latest":
+        latest_subq = (
+            db.query(
+                PolicyVersion.document_id,
+                func.max(PolicyVersion.version).label("latest_version"),
+            )
+            .group_by(PolicyVersion.document_id)
+            .subquery()
+        )
+        base = (
+            base.join(latest_subq, PolicyApproval.document_id == latest_subq.c.document_id)
+            .filter(PolicyApproval.version == latest_subq.c.latest_version)
+        )
+
+    rows = base.group_by(PolicyApproval.document_id, PolicyApproval.status).all()
+
     by_doc: Dict[int, Dict[str, int]] = {}
     for doc_id, st, count in rows:
         rec = by_doc.setdefault(doc_id, {"pending": 0, "approved": 0, "rejected": 0})
         rec[st] = count
+
     return [
-        {"document_id": doc_id, "pending": v["pending"], "approved": v["approved"], "rejected": v["rejected"]}
+        {
+            "document_id": doc_id,
+            "pending": v["pending"],
+            "approved": v["approved"],
+            "rejected": v["rejected"],
+        }
         for doc_id, v in by_doc.items()
     ]
 

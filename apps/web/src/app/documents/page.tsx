@@ -44,7 +44,7 @@ export default function DocumentsPage() {
     setLoading(true);
     Promise.all([
       api.get<DocumentOut[]>("/v1/documents"),
-      api.get<DocApprovalSummary[]>("/v1/documents/approvals/summary_by_doc"),
+      api.get<DocApprovalSummary[]>("/v1/documents/approvals/summary_by_doc?scope=latest"),
     ])
       .then(([dDocs, dSum]) => {
         setDocs(dDocs.data || []);

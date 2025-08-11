@@ -105,6 +105,9 @@ export default function DocumentDetailPage() {
 
   const { data: session } = useSession();
   const isAuthed = Boolean(session?.user);
+  const role = (session?.user as any)?.role ?? "viewer";
+  const canApprove = ["owner", "admin", "approver"].includes(role);
+  const canRequestApproval = ["owner", "admin", "editor"].includes(role);
 
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
   const [current, setCurrent] = useState<VersionDetail | null>(null);
@@ -382,6 +385,14 @@ export default function DocumentDetailPage() {
       setNewReviewer("");
       setNewApprovalNote("");
       await refreshApprovals();
+
+      // reflect doc state immediately
+      setStatus("in_review");
+
+      // (optional) ensure absolute truth from backend
+      // const meta = await api.get<DocumentDetail>(`/v1/documents/${docId}`);
+      // setDoc(meta.data);
+      // setStatus(meta.data.status as any);
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e.message);
     } finally {
@@ -390,14 +401,22 @@ export default function DocumentDetailPage() {
   };
 
   const onDecideApproval = async (approvalId: number, status: "approved" | "rejected") => {
-    const note = window.prompt(status === "approved" ? "Approval note (optional)" : "Rejection reason (optional)") || "";
+    const note =
+      window.prompt(status === "approved" ? "Approval note (optional)" : "Rejection reason (optional)") || "";
     setErr(null);
     setLoading(true);
     try {
       await api.patch<Approval>(`/v1/documents/${docId}/approvals/${approvalId}`, { status, note });
       await refreshApprovals();
+
+      // optimistic UI
       if (status === "approved") setStatus("approved");
       if (status === "rejected") setStatus("rejected");
+
+      // authoritative refresh of doc meta/status
+      const meta = await api.get<DocumentDetail>(`/v1/documents/${docId}`);
+      setDoc(meta.data);
+      setStatus(meta.data.status as any);
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e.message);
     } finally {
@@ -413,10 +432,20 @@ export default function DocumentDetailPage() {
         <>
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-semibold">{doc.title}</h1>
+              <h1 className="text-2xl font-semibold flex items-center gap-2">
+                {doc.title}
+                <span className={`rounded px-2 py-0.5 text-xs ${
+                  status === "approved" ? "bg-green-100 text-green-700" :
+                  status === "rejected" ? "bg-red-100 text-red-700" :
+                  status === "in_review" ? "bg-yellow-100 text-yellow-700" :
+                  status === "published" ? "bg-blue-100 text-blue-700" :
+                  "bg-gray-100 text-gray-700"
+                }`}>
+                  {status}
+                </span>
+              </h1>
               <p className="text-xs text-gray-600">
-                Doc #{doc.id} • Template: {doc.template_key} • Updated{" "}
-                {new Date(doc.updated_at).toLocaleString()}
+                Doc #{doc.id} • Template: {doc.template_key} • Updated {new Date(doc.updated_at).toLocaleString()}
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -540,6 +569,9 @@ export default function DocumentDetailPage() {
                 {/* Request approval */}
                 <div className="mt-4 rounded-lg border p-3">
                   <div className="mb-2 text-sm font-semibold">Request Approval</div>
+                  {!canRequestApproval && (
+                    <p className="mb-2 text-xs text-gray-500">You need the editor role to request approvals.</p>
+                  )}
                   <label className="mb-2 flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
@@ -555,18 +587,18 @@ export default function DocumentDetailPage() {
                     placeholder="Reviewer (name or email)"
                     value={newReviewer}
                     onChange={(e) => setNewReviewer(e.target.value)}
-                    disabled={!isAuthed}
+                    disabled={!isAuthed || !canRequestApproval}
                   />
                   <textarea
                     className="mb-2 h-20 w-full rounded border px-2 py-1 text-sm"
                     placeholder="Optional note"
                     value={newApprovalNote}
                     onChange={(e) => setNewApprovalNote(e.target.value)}
-                    disabled={!isAuthed}
+                    disabled={!isAuthed || !canRequestApproval}
                   />
                   <button
                     onClick={onCreateApproval}
-                    disabled={!isAuthed || !newReviewer.trim() || loading}
+                    disabled={!isAuthed || !canRequestApproval || !newReviewer.trim() || loading}
                     className="w-full rounded border px-2 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Send Request
@@ -771,23 +803,25 @@ export default function DocumentDetailPage() {
                             {a.decided_at ? `Decided ${new Date(a.decided_at).toLocaleString()}` : "Awaiting decision"}
                           </span>
                         </div>
-                        {a.status === "pending" && (
+                        {a.status === "pending" && canApprove ? (
                           <div className="mt-2 flex gap-2">
                             <button
                               onClick={() => onDecideApproval(a.id, "approved")}
-                              className="rounded border px-2 py-1 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="rounded border border-green-700 px-2 py-1 text-xs text-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                               disabled={!isAuthed || loading}
                             >
                               Approve
                             </button>
                             <button
                               onClick={() => onDecideApproval(a.id, "rejected")}
-                              className="rounded border px-2 py-1 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="rounded border border-red-700 px-2 py-1 text-xs text-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
                               disabled={!isAuthed || loading}
                             >
                               Reject
                             </button>
                           </div>
+                        ) : (
+                          <span className="text-xs text-gray-500">—</span>
                         )}
                       </li>
                     ))}
