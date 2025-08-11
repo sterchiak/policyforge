@@ -3,14 +3,15 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from apps.api.app.db import get_db
-from apps.api.app.models import PolicyDocument, PolicyVersion, PolicyComment
+from apps.api.app.models import PolicyDocument, PolicyVersion, PolicyComment, PolicyApproval
 from apps.api.routes.policies import DraftRequest, render_html, TEMPLATES
 
 router = APIRouter(prefix="/v1/documents", tags=["documents"])
@@ -49,7 +50,7 @@ class VersionDetailOut(BaseModel):
 
 class DocumentUpdate(BaseModel):
     title: Optional[str] = None
-    status: Optional[Literal["draft", "in_review", "approved", "published"]] = None
+    status: Optional[Literal["draft", "in_review", "approved", "published", "rejected"]] = None
 
 
 # Comments I/O
@@ -66,6 +67,30 @@ class CommentOut(BaseModel):
     author: str
     body: str
     created_at: str
+
+
+# --- NEW: Approvals I/O ---
+class ApprovalIn(BaseModel):
+    reviewer: str
+    version: Optional[int] = None
+    note: Optional[str] = None
+
+
+class ApprovalOut(BaseModel):
+    id: int
+    document_id: int
+    version: Optional[int]
+    reviewer: str
+    status: Literal["pending", "approved", "rejected"]
+    note: Optional[str]
+    requested_at: str
+    decided_at: Optional[str]
+
+
+class ApprovalUpdate(BaseModel):
+    status: Literal["approved", "rejected"]
+    note: Optional[str] = None
+    reviewer: Optional[str] = None  # allow updating display name/email
 
 
 # -----------------------
@@ -408,3 +433,138 @@ def create_comment(doc_id: int, payload: CommentIn, db: Session = Depends(get_db
         body=c.body,
         created_at=c.created_at.isoformat(),
     )
+
+
+# -----------------------
+# Approvals routes
+# -----------------------
+@router.get("/{doc_id}/approvals", response_model=List[ApprovalOut])
+def list_approvals(doc_id: int, version: Optional[int] = None, db: Session = Depends(get_db)):
+    q = db.query(PolicyApproval).filter(PolicyApproval.document_id == doc_id)
+    if version is not None:
+        q = q.filter(PolicyApproval.version == version)
+    rows = q.order_by(PolicyApproval.requested_at.asc()).all()
+    return [
+        ApprovalOut(
+            id=r.id,
+            document_id=r.document_id,
+            version=r.version,
+            reviewer=r.reviewer,
+            status=r.status,  # type: ignore
+            note=r.note,
+            requested_at=r.requested_at.isoformat(),
+            decided_at=r.decided_at.isoformat() if r.decided_at else None,
+        )
+        for r in rows
+    ]
+
+
+@router.post("/{doc_id}/approvals", response_model=ApprovalOut, status_code=201)
+def create_approval(doc_id: int, payload: ApprovalIn, db: Session = Depends(get_db)):
+    d = db.get(PolicyDocument, doc_id)
+    if not d:
+        raise HTTPException(404, "Document not found")
+
+    if payload.version is not None:
+        exists = (
+            db.query(PolicyVersion)
+            .filter(PolicyVersion.document_id == doc_id, PolicyVersion.version == payload.version)
+            .first()
+        )
+        if not exists:
+            raise HTTPException(400, "Version not found")
+
+    a = PolicyApproval(
+        document_id=doc_id,
+        version=payload.version,
+        reviewer=payload.reviewer.strip(),
+        status="pending",
+        note=(payload.note or "").strip() or None,
+    )
+    db.add(a)
+    db.commit()
+    db.refresh(a)
+
+    return ApprovalOut(
+        id=a.id,
+        document_id=a.document_id,
+        version=a.version,
+        reviewer=a.reviewer,
+        status=a.status,  # type: ignore
+        note=a.note,
+        requested_at=a.requested_at.isoformat(),
+        decided_at=None,
+    )
+
+
+@router.patch("/{doc_id}/approvals/{approval_id}", response_model=ApprovalOut)
+def decide_approval(doc_id: int, approval_id: int, payload: ApprovalUpdate, db: Session = Depends(get_db)):
+    a = db.get(PolicyApproval, approval_id)
+    if not a or a.document_id != doc_id:
+        raise HTTPException(404, "Approval not found")
+
+    a.status = payload.status  # approved / rejected
+    if payload.note is not None:
+        a.note = payload.note.strip() or None
+    if payload.reviewer:
+        a.reviewer = payload.reviewer.strip()
+    a.decided_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(a)
+
+    return ApprovalOut(
+        id=a.id,
+        document_id=a.document_id,
+        version=a.version,
+        reviewer=a.reviewer,
+        status=a.status,  # type: ignore
+        note=a.note,
+        requested_at=a.requested_at.isoformat(),
+        decided_at=a.decided_at.isoformat() if a.decided_at else None,
+    )
+
+
+@router.get("/{doc_id}/approvals/summary")
+def approvals_summary(doc_id: int, version: Optional[int] = None, db: Session = Depends(get_db)):
+    q = db.query(PolicyApproval.status, func.count(PolicyApproval.id)).filter(PolicyApproval.document_id == doc_id)
+    if version is not None:
+        q = q.filter(PolicyApproval.version == version)
+    rows = q.group_by(PolicyApproval.status).all()
+    summary: Dict[str, int] = {status: count for status, count in rows}
+    return {
+        "pending": summary.get("pending", 0),
+        "approved": summary.get("approved", 0),
+        "rejected": summary.get("rejected", 0),
+    }
+
+@router.get("/approvals/summary_by_doc")
+def approvals_summary_by_doc(db: Session = Depends(get_db)):
+    rows = (
+        db.query(PolicyApproval.document_id, PolicyApproval.status, func.count(PolicyApproval.id))
+        .group_by(PolicyApproval.document_id, PolicyApproval.status)
+        .all()
+    )
+    # [{document_id, pending, approved, rejected}, ...]
+    by_doc: Dict[int, Dict[str, int]] = {}
+    for doc_id, status, count in rows:
+        rec = by_doc.setdefault(doc_id, {"pending": 0, "approved": 0, "rejected": 0})
+        rec[status] = count
+    return [
+        {"document_id": doc_id, "pending": v["pending"], "approved": v["approved"], "rejected": v["rejected"]}
+        for doc_id, v in by_doc.items()
+    ]
+
+@router.get("/approvals/summary_all")
+def approvals_summary_all(db: Session = Depends(get_db)):
+    rows = (
+        db.query(PolicyApproval.status, func.count(PolicyApproval.id))
+        .group_by(PolicyApproval.status)
+        .all()
+    )
+    d: Dict[str, int] = {status: count for status, count in rows}
+    return {
+        "pending": d.get("pending", 0),
+        "approved": d.get("approved", 0),
+        "rejected": d.get("rejected", 0),
+    }

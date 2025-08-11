@@ -45,13 +45,24 @@ type Comment = {
   created_at: string;
 };
 
+type Approval = {
+  id: number;
+  document_id: number;
+  version: number | null;
+  reviewer: string;
+  status: "pending" | "approved" | "rejected";
+  note: string | null;
+  requested_at: string;
+  decided_at: string | null;
+};
+
 function getFilenameFromDisposition(disposition?: string, fallback = "policy.html") {
   if (!disposition) return fallback;
   const m = disposition.match(/filename="(.+?)"/i);
   return m?.[1] ?? fallback;
 }
 
-const STATUS_OPTS = ["draft", "in_review", "approved", "published"] as const;
+const STATUS_OPTS = ["draft", "in_review", "approved", "published", "rejected"] as const;
 
 // --- helpers for diff ---
 const stripHtml = (html: string) => html.replace(/<[^>]+>/g, " ");
@@ -112,6 +123,12 @@ export default function DocumentDetailPage() {
   const [commentAuthor, setCommentAuthor] = useState("You");
   const [commentOnlyCurrent, setCommentOnlyCurrent] = useState(true);
 
+  // approvals state
+  const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [onlyCurrentApprovals, setOnlyCurrentApprovals] = useState(true);
+  const [newReviewer, setNewReviewer] = useState("");
+  const [newApprovalNote, setNewApprovalNote] = useState("");
+
   const latestVersion = useMemo(() => doc?.latest_version ?? null, [doc]);
 
   // load document + latest version
@@ -130,7 +147,7 @@ export default function DocumentDetailPage() {
       .catch((e) => setErr(e.message));
   }, [docId]);
 
-  // load comments (toggle all vs current version)
+  // load comments
   useEffect(() => {
     if (!docId) return;
     const query =
@@ -142,6 +159,19 @@ export default function DocumentDetailPage() {
       .then((r) => setComments(r.data))
       .catch(() => setComments([]));
   }, [docId, current?.version, commentOnlyCurrent]);
+
+  // load approvals
+  useEffect(() => {
+    if (!docId) return;
+    const query =
+      onlyCurrentApprovals && current?.version
+        ? `/v1/documents/${docId}/approvals?version=${current.version}`
+        : `/v1/documents/${docId}/approvals`;
+    api
+      .get<Approval[]>(query)
+      .then((r) => setApprovals(r.data))
+      .catch(() => setApprovals([]));
+  }, [docId, current?.version, onlyCurrentApprovals]);
 
   const loadVersion = async (v: number) => {
     setErr(null);
@@ -323,19 +353,48 @@ export default function DocumentDetailPage() {
     }
   };
 
-  const onAddComment = async () => {
-    if (!newComment.trim()) return;
+  // --- Approvals ---
+  const refreshApprovals = async () => {
+    if (!docId) return;
+    const query =
+      onlyCurrentApprovals && current?.version
+        ? `/v1/documents/${docId}/approvals?version=${current.version}`
+        : `/v1/documents/${docId}/approvals`;
+    const r = await api.get<Approval[]>(query);
+    setApprovals(r.data);
+  };
+
+  const onCreateApproval = async () => {
+    if (!newReviewer.trim()) return;
     setErr(null);
     setLoading(true);
     try {
       const payload = {
-        author: commentAuthor || "You",
-        body: newComment,
-        version: commentOnlyCurrent ? current?.version ?? null : null,
+        reviewer: newReviewer.trim(),
+        version: onlyCurrentApprovals ? current?.version ?? null : null,
+        note: newApprovalNote || undefined,
       };
-      const res = await api.post<Comment>(`/v1/documents/${docId}/comments`, payload);
-      setComments((prev) => [...prev, res.data]);
-      setNewComment("");
+      await api.post<Approval>(`/v1/documents/${docId}/approvals`, payload);
+      setNewReviewer("");
+      setNewApprovalNote("");
+      await refreshApprovals();
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail || e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onDecideApproval = async (approvalId: number, status: "approved" | "rejected") => {
+    const note = window.prompt(status === "approved" ? "Approval note (optional)" : "Rejection reason (optional)") || "";
+    setErr(null);
+    setLoading(true);
+    try {
+      await api.patch<Approval>(`/v1/documents/${docId}/approvals/${approvalId}`, { status, note });
+      await refreshApprovals();
+      // Optional: nudge doc status locally
+      if (status === "approved") setStatus("approved");
+      if (status === "rejected" && status !== "approved") setStatus("rejected");
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e.message);
     } finally {
@@ -396,81 +455,112 @@ export default function DocumentDetailPage() {
           </div>
 
           <div className="grid gap-6 md:grid-cols-[260px_1fr]">
-            <Card title="Versions">
-              <div className="space-y-2">
-                {doc.versions.map((v) => (
-                  <div key={v.id} className="flex items-center justify-between gap-2">
-                    <button
-                      onClick={() => loadVersion(v.version)}
-                      className={`flex-1 rounded border px-3 py-2 text-left text-sm ${
-                        current?.version === v.version
-                          ? "border-black"
-                          : "border-gray-200 hover:border-gray-300"
-                      }`}
-                      title={`Open v${v.version}`}
-                    >
-                      v{v.version} • {new Date(v.created_at).toLocaleString()}
-                    </button>
-                    <button
-                      onClick={() => onRollback(v.version)}
-                      className="rounded border px-2 py-1 text-xs"
-                      title="Create new version from this"
-                    >
-                      Rollback
-                    </button>
-                    <button
-                      onClick={() => onDeleteVersion(v.version)}
-                      className="rounded border border-red-600 px-2 py-1 text-xs text-red-700"
-                      title="Delete version"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                ))}
-              </div>
+            {/* LEFT: Versions + Compare + Approvals Request */}
+            <div className="space-y-6">
+              <Card title="Versions">
+                <div className="space-y-2">
+                  {doc.versions.map((v) => (
+                    <div key={v.id} className="flex items-center justify-between gap-2">
+                      <button
+                        onClick={() => loadVersion(v.version)}
+                        className={`flex-1 rounded border px-3 py-2 text-left text-sm ${
+                          current?.version === v.version ? "border-black" : "border-gray-200 hover:border-gray-300"
+                        }`}
+                        title={`Open v${v.version}`}
+                      >
+                        v{v.version} • {new Date(v.created_at).toLocaleString()}
+                      </button>
+                      <button
+                        onClick={() => onRollback(v.version)}
+                        className="rounded border px-2 py-1 text-xs"
+                        title="Create new version from this"
+                      >
+                        Rollback
+                      </button>
+                      <button
+                        onClick={() => onDeleteVersion(v.version)}
+                        className="rounded border border-red-600 px-2 py-1 text-xs text-red-700"
+                        title="Delete version"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ))}
+                </div>
 
-              {/* Compare picker */}
-              {doc.versions.length >= 2 && (
-                <div className="mt-4 rounded-lg border p-3">
-                  <div className="mb-2 text-sm font-semibold">Compare Versions</div>
-                  <div className="flex items-center gap-2">
-                    <select
-                      className="w-full rounded border px-2 py-1 text-sm"
-                      value={compareA}
-                      onChange={(e) =>
-                        setCompareA(e.target.value === "" ? "" : Number(e.target.value))
-                      }
-                    >
-                      <option value="">From…</option>
-                      {doc.versions.map((v) => (
-                        <option key={`a-${v.id}`} value={v.version}>
-                          v{v.version}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="text-sm text-gray-500">→</span>
-                    <select
-                      className="w-full rounded border px-2 py-1 text-sm"
-                      value={compareB}
-                      onChange={(e) =>
-                        setCompareB(e.target.value === "" ? "" : Number(e.target.value))
-                      }
-                    >
-                      <option value="">To…</option>
-                      {doc.versions.map((v) => (
-                        <option key={`b-${v.id}`} value={v.version}>
-                          v{v.version}
-                        </option>
-                      ))}
-                    </select>
+                {/* Compare picker */}
+                {doc.versions.length >= 2 && (
+                  <div className="mt-4 rounded-lg border p-3">
+                    <div className="mb-2 text-sm font-semibold">Compare Versions</div>
+                    <div className="flex items-center gap-2">
+                      <select
+                        className="w-full rounded border px-2 py-1 text-sm"
+                        value={compareA}
+                        onChange={(e) =>
+                          setCompareA(e.target.value === "" ? "" : Number(e.target.value))
+                        }
+                      >
+                        <option value="">From…</option>
+                        {doc.versions.map((v) => (
+                          <option key={`a-${v.id}`} value={v.version}>
+                            v{v.version}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-sm text-gray-500">→</span>
+                      <select
+                        className="w-full rounded border px-2 py-1 text-sm"
+                        value={compareB}
+                        onChange={(e) =>
+                          setCompareB(e.target.value === "" ? "" : Number(e.target.value))
+                        }
+                      >
+                        <option value="">To…</option>
+                        {doc.versions.map((v) => (
+                          <option key={`b-${v.id}`} value={v.version}>
+                            v{v.version}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <button onClick={runCompare} className="mt-2 w-full rounded border px-2 py-1 text-sm">
+                      Compare
+                    </button>
                   </div>
-                  <button onClick={runCompare} className="mt-2 w-full rounded border px-2 py-1 text-sm">
-                    Compare
+                )}
+
+                {/* Request approval */}
+                <div className="mt-4 rounded-lg border p-3">
+                  <div className="mb-2 text-sm font-semibold">Request Approval</div>
+                  <label className="mb-2 flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4"
+                      checked={onlyCurrentApprovals}
+                      onChange={(e) => setOnlyCurrentApprovals(e.target.checked)}
+                    />
+                    Only for current version {current ? `(v${current.version})` : ""}
+                  </label>
+                  <input
+                    className="mb-2 w-full rounded border px-2 py-1 text-sm"
+                    placeholder="Reviewer (name or email)"
+                    value={newReviewer}
+                    onChange={(e) => setNewReviewer(e.target.value)}
+                  />
+                  <textarea
+                    className="mb-2 h-20 w-full rounded border px-2 py-1 text-sm"
+                    placeholder="Optional note"
+                    value={newApprovalNote}
+                    onChange={(e) => setNewApprovalNote(e.target.value)}
+                  />
+                  <button onClick={onCreateApproval} className="w-full rounded border px-2 py-1 text-sm">
+                    Send Request
                   </button>
                 </div>
-              )}
-            </Card>
+              </Card>
+            </div>
 
+            {/* RIGHT: Preview + Comparison + Comments + Approvals List */}
             <div className="space-y-6">
               <Card title={`Preview ${current ? `(v${current.version})` : ""}`}>
                 {err && <p className="mb-3 text-sm text-red-600">{err}</p>}
@@ -539,7 +629,6 @@ export default function DocumentDetailPage() {
                 </Card>
               )}
 
-              {/* Comments */}
               <Card title="Comments">
                 <div className="mb-3 flex items-center justify-between">
                   <label className="flex items-center gap-2 text-sm">
@@ -585,13 +674,102 @@ export default function DocumentDetailPage() {
                     onChange={(e) => setNewComment(e.target.value)}
                   />
                   <button
-                    onClick={onAddComment}
+                    onClick={async () => {
+                      if (!newComment.trim()) return;
+                      setErr(null);
+                      setLoading(true);
+                      try {
+                        const payload = {
+                          author: commentAuthor || "You",
+                          body: newComment,
+                          version: commentOnlyCurrent ? current?.version ?? null : null,
+                        };
+                        const res = await api.post<Comment>(`/v1/documents/${docId}/comments`, payload);
+                        setComments((prev) => [...prev, res.data]);
+                        setNewComment("");
+                      } catch (e: any) {
+                        setErr(e?.response?.data?.detail || e.message);
+                      } finally {
+                        setLoading(false);
+                      }
+                    }}
                     disabled={loading || !newComment.trim()}
                     className="rounded border px-3 py-1.5 text-sm"
                   >
                     Add Comment
                   </button>
                 </div>
+              </Card>
+
+              {/* Approvals */}
+              <Card title="Approvals">
+                <div className="mb-3 flex items-center justify-between">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4"
+                      checked={onlyCurrentApprovals}
+                      onChange={async (e) => {
+                        setOnlyCurrentApprovals(e.target.checked);
+                        // refresh happens via effect
+                      }}
+                    />
+                    Only show for current version {current ? `(v${current.version})` : ""}
+                  </label>
+                </div>
+
+                {approvals.length === 0 ? (
+                  <p className="text-sm text-gray-700">No approvals yet.</p>
+                ) : (
+                  <ul className="space-y-3">
+                    {approvals.map((a) => (
+                      <li key={a.id} className="rounded border p-2">
+                        <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{a.reviewer}</span>
+                            <span className="text-gray-600">{a.version ? `v${a.version}` : "all versions"}</span>
+                          </div>
+                          <div>
+                            <span
+                              className={`rounded px-2 py-0.5 ${
+                                a.status === "approved"
+                                  ? "bg-green-100 text-green-700"
+                                  : a.status === "rejected"
+                                  ? "bg-red-100 text-red-700"
+                                  : "bg-yellow-100 text-yellow-700"
+                              }`}
+                            >
+                              {a.status}
+                            </span>
+                          </div>
+                        </div>
+                        {a.note && <div className="mb-1 text-sm text-gray-900">{a.note}</div>}
+                        <div className="flex flex-wrap items-center justify-between text-xs text-gray-600">
+                          <span>Requested {new Date(a.requested_at).toLocaleString()}</span>
+                          <span>
+                            {a.decided_at ? `Decided ${new Date(a.decided_at).toLocaleString()}` : "Awaiting decision"}
+                          </span>
+                        </div>
+                        {a.status === "pending" && (
+                          <div className="mt-2 flex gap-2">
+                            <button
+                              onClick={() => onDecideApproval(a.id, "approved")}
+                              className="rounded border px-2 py-1 text-xs"
+                            >
+                              Approve
+                            </button>
+                            <button
+                              onClick={() => onDecideApproval(a.id, "rejected")}
+                              className="rounded border px-2 py-1 text-xs"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </Card>
             </div>
           </div>

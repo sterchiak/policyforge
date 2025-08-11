@@ -41,6 +41,13 @@ class PolicyDocument(Base):
         passive_deletes=True,
     )
 
+    approvals = relationship(
+        "PolicyApproval",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
 
 class PolicyVersion(Base):
     __tablename__ = "policy_versions"
@@ -62,7 +69,6 @@ class PolicyVersion(Base):
     __table_args__ = (UniqueConstraint("document_id", "version", name="uq_doc_version"),)
 
 
-# --- NEW: Comments ---
 class PolicyComment(Base):
     __tablename__ = "policy_comments"
 
@@ -79,3 +85,24 @@ class PolicyComment(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     document = relationship("PolicyDocument", back_populates="comments")
+
+
+# --- NEW: Approvals ---
+class PolicyApproval(Base):
+    __tablename__ = "policy_approvals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(
+        Integer,
+        ForeignKey("policy_documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version = Column(Integer, nullable=True)  # approve this specific version (optional)
+    reviewer = Column(String(120), nullable=False)  # name or email
+    status = Column(String(20), nullable=False, default="pending", index=True)  # pending/approved/rejected
+    note = Column(Text, nullable=True)
+    requested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    decided_at = Column(DateTime, nullable=True)
+
+    document = relationship("PolicyDocument", back_populates="approvals")
