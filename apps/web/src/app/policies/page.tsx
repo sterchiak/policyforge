@@ -2,11 +2,23 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { addRecent } from "@/lib/recents";
-
 
 type Template = { key: string; title: string };
 type DraftResponse = { title: string; html: string };
+
+// from /v1/documents (create/list)
+type DocumentOut = {
+  id: number;
+  title: string;
+  template_key: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  latest_version: number;
+};
+
+// from POST /v1/documents/{id}/versions
+type VersionOut = { id: number; version: number; created_at: string };
 
 function getFilenameFromDisposition(disposition?: string, fallback = "policy.html") {
   if (!disposition) return fallback;
@@ -16,14 +28,22 @@ function getFilenameFromDisposition(disposition?: string, fallback = "policy.htm
 
 export default function PoliciesPage() {
   const [templates, setTemplates] = useState<Template[]>([]);
+
+  // form state
   const [templateKey, setTemplateKey] = useState("access_control_policy");
   const [orgName, setOrgName] = useState("Acme Corp");
   const [pwdLen, setPwdLen] = useState(14);
   const [mfaRoles, setMfaRoles] = useState("Admin");
   const [logDays, setLogDays] = useState(90);
+
+  // ui state
   const [preview, setPreview] = useState<DraftResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // persistence state
+  const [docId, setDocId] = useState<number | null>(null);
+  const [latestVersion, setLatestVersion] = useState<number | null>(null);
 
   // load template list
   useEffect(() => {
@@ -41,42 +61,13 @@ export default function PoliciesPage() {
     log_retention_days: logDays,
   });
 
-  // stub generator
+  // generate preview (stub)
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr(null);
     setLoading(true);
     try {
       const res = await api.post<DraftResponse>("/v1/policies/draft", currentPayload());
-      setPreview(res.data);
-      // right after setPreview(res.data);
-addRecent({
-  id: `${templateKey}-${Date.now()}`,
-  title: res.data.title,
-  templateKey,
-  orgName,
-  createdAt: new Date().toISOString(),
-  params: {
-    password_min_length: pwdLen,
-    mfa_required_roles: mfaRoles.split(",").map((s) => s.trim()).filter(Boolean),
-    log_retention_days: logDays,
-  },
-});
-
-    } catch (e: any) {
-      setErr(e?.response?.data?.detail || e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // optional: AI generator (requires /v1/policies/draft/ai on backend)
-  const onSubmitAI = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErr(null);
-    setLoading(true);
-    try {
-      const res = await api.post<DraftResponse>("/v1/policies/draft/ai", currentPayload());
       setPreview(res.data);
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e.message);
@@ -141,11 +132,48 @@ addRecent({
     }
   };
 
+  // create document (v1)
+  const onSaveDraft = async () => {
+    setErr(null);
+    setLoading(true);
+    try {
+      const res = await api.post<DocumentOut>("/v1/documents", currentPayload());
+      setDocId(res.data.id);
+      setLatestVersion(res.data.latest_version || 1);
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail || e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // add new version (v+1)
+  const onSaveNewVersion = async () => {
+    if (!docId) return;
+    setErr(null);
+    setLoading(true);
+    try {
+      const res = await api.post<VersionOut>(`/v1/documents/${docId}/versions`, currentPayload());
+      setLatestVersion(res.data.version);
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail || e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <main className="min-h-screen p-6">
       <div className="mx-auto max-w-5xl grid gap-6 md:grid-cols-2">
         <section className="rounded-2xl border p-5 shadow-sm">
-          <h1 className="text-xl font-semibold">Draft a Policy (MVP)</h1>
+          <div className="flex items-start justify-between">
+            <h1 className="text-xl font-semibold">Draft a Policy</h1>
+            {docId && (
+              <span className="rounded-md border border-green-200 bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
+                Saved • Doc #{docId}{typeof latestVersion === "number" ? ` • v${latestVersion}` : ""}
+              </span>
+            )}
+          </div>
 
           <form onSubmit={onSubmit} className="mt-4 space-y-4">
             <div>
@@ -219,13 +247,25 @@ addRecent({
 
               <button
                 type="button"
-                onClick={onSubmitAI}
+                onClick={onSaveDraft}
                 disabled={loading}
-                className="rounded bg-indigo-600 px-4 py-2 text-white disabled:opacity-50"
-                title="Requires /v1/policies/draft/ai backend route"
+                className="rounded border border-black px-4 py-2 text-black disabled:opacity-50"
+                title="Create a new document (version 1) in storage"
               >
-                Generate with AI
+                Save Draft
               </button>
+
+              {docId && (
+                <button
+                  type="button"
+                  onClick={onSaveNewVersion}
+                  disabled={loading}
+                  className="rounded border border-black px-4 py-2 text-black disabled:opacity-50"
+                  title="Save a new version for this document"
+                >
+                  Save New Version
+                </button>
+              )}
 
               <button
                 type="button"
@@ -251,14 +291,9 @@ addRecent({
         <section className="rounded-2xl border p-5 shadow-sm">
           <h2 className="text-lg font-semibold">Preview</h2>
           {!preview ? (
-            <p className="mt-2 text-sm text-gray-600">
-              No draft yet. Submit the form to see a preview.
-            </p>
+            <p className="mt-2 text-sm text-gray-600">No draft yet. Submit the form to see a preview.</p>
           ) : (
-            <div
-              className="prose mt-3 max-w-none"
-              dangerouslySetInnerHTML={{ __html: preview.html }}
-            />
+            <div className="prose mt-3 max-w-none" dangerouslySetInnerHTML={{ __html: preview.html }} />
           )}
         </section>
       </div>
