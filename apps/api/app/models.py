@@ -1,32 +1,81 @@
+from __future__ import annotations
+
 from datetime import datetime
-from typing import List, Optional
-from sqlalchemy import String, Integer, Text, DateTime, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from .db import Base
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Text,
+    DateTime,
+    ForeignKey,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import relationship
+
+from apps.api.app.db import Base
+
 
 class PolicyDocument(Base):
     __tablename__ = "policy_documents"
 
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    org_id: Mapped[Optional[int]] = mapped_column(nullable=True)
-    template_key: Mapped[str] = mapped_column(String(100))
-    title: Mapped[str] = mapped_column(String(255))
-    status: Mapped[str] = mapped_column(String(20), default="draft")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True, index=True)
+    org_id = Column(Integer, nullable=True)
+    template_key = Column(String(100), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    status = Column(String(50), nullable=False, default="draft", index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
-    versions: Mapped[List["PolicyVersion"]] = relationship(
-        back_populates="document", cascade="all, delete-orphan"
+    versions = relationship(
+        "PolicyVersion",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="PolicyVersion.version.asc()",
     )
+
+    comments = relationship(
+        "PolicyComment",
+        back_populates="document",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
 
 class PolicyVersion(Base):
     __tablename__ = "policy_versions"
 
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    document_id: Mapped[int] = mapped_column(ForeignKey("policy_documents.id", ondelete="CASCADE"))
-    version: Mapped[int] = mapped_column(Integer)
-    html: Mapped[str] = mapped_column(Text)
-    params_json: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(
+        Integer,
+        ForeignKey("policy_documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version = Column(Integer, nullable=False)
+    html = Column(Text, nullable=False)
+    params_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
-    document: Mapped[PolicyDocument] = relationship(back_populates="versions")
+    document = relationship("PolicyDocument", back_populates="versions")
+
+    __table_args__ = (UniqueConstraint("document_id", "version", name="uq_doc_version"),)
+
+
+# --- NEW: Comments ---
+class PolicyComment(Base):
+    __tablename__ = "policy_comments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(
+        Integer,
+        ForeignKey("policy_documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version = Column(Integer, nullable=True)  # optional: tie to a specific version
+    author = Column(String(100), nullable=False, default="User")
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    document = relationship("PolicyDocument", back_populates="comments")

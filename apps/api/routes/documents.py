@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from apps.api.app.db import get_db
-from apps.api.app.models import PolicyDocument, PolicyVersion
+from apps.api.app.models import PolicyDocument, PolicyVersion, PolicyComment
 from apps.api.routes.policies import DraftRequest, render_html, TEMPLATES
 
 router = APIRouter(prefix="/v1/documents", tags=["documents"])
@@ -52,6 +52,22 @@ class DocumentUpdate(BaseModel):
     status: Optional[Literal["draft", "in_review", "approved", "published"]] = None
 
 
+# Comments I/O
+class CommentIn(BaseModel):
+    body: str
+    author: str = "User"
+    version: Optional[int] = None
+
+
+class CommentOut(BaseModel):
+    id: int
+    document_id: int
+    version: Optional[int]
+    author: str
+    body: str
+    created_at: str
+
+
 # -----------------------
 # Helpers
 # -----------------------
@@ -78,11 +94,10 @@ def _doc_to_out(db: Session, d: PolicyDocument) -> DocumentOut:
 
 
 # -----------------------
-# Routes
+# Document & Version routes
 # -----------------------
 @router.post("", response_model=DocumentOut)
 def create_document(req: DraftRequest, db: Session = Depends(get_db)):
-    """Create a new policy document and its initial version (v1)."""
     if req.template_key not in {t.key for t in TEMPLATES}:
         raise HTTPException(status_code=400, detail="Unknown template_key")
 
@@ -92,11 +107,7 @@ def create_document(req: DraftRequest, db: Session = Depends(get_db)):
         req.template_key.replace("_", " ").title(),
     )
 
-    doc = PolicyDocument(
-        template_key=req.template_key,
-        title=title,
-        status="draft",
-    )
+    doc = PolicyDocument(template_key=req.template_key, title=title, status="draft")
     db.add(doc)
     db.flush()  # assigns doc.id
 
@@ -143,9 +154,7 @@ def get_document(doc_id: int, db: Session = Depends(get_db)):
         **_doc_to_out(db, d).model_dump(),
         versions=[
             VersionOut(
-                id=v.id,
-                version=v.version,
-                created_at=v.created_at.isoformat(),
+                id=v.id, version=v.version, created_at=v.created_at.isoformat()
             )
             for v in versions
         ],
@@ -176,6 +185,7 @@ def get_latest_version(doc_id: int, db: Session = Depends(get_db)):
     )
     if not v:
         raise HTTPException(status_code=404, detail="No versions found")
+
     try:
         payload = json.loads(v.params_json)
         params = DraftRequest.model_validate(payload)
@@ -187,6 +197,7 @@ def get_latest_version(doc_id: int, db: Session = Depends(get_db)):
             mfa_required_roles=["Admin"],
             log_retention_days=90,
         )
+
     return VersionDetailOut(
         id=v.id,
         version=v.version,
@@ -198,7 +209,6 @@ def get_latest_version(doc_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{doc_id}/versions", response_model=VersionOut)
 def create_version(doc_id: int, req: DraftRequest, db: Session = Depends(get_db)):
-    """Create a new version for an existing document using current parameters."""
     d = db.get(PolicyDocument, doc_id)
     if not d:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -223,21 +233,15 @@ def create_version(doc_id: int, req: DraftRequest, db: Session = Depends(get_db)
     db.refresh(v)
 
     return VersionOut(
-        id=v.id,
-        version=v.version,
-        created_at=v.created_at.isoformat(),
+        id=v.id, version=v.version, created_at=v.created_at.isoformat()
     )
 
 
 @router.post("/{doc_id}/versions/{version}/rollback", response_model=VersionOut)
 def rollback_to_version(doc_id: int, version: int, db: Session = Depends(get_db)):
-    """Create a new version using the params from a historical version."""
     base = (
         db.query(PolicyVersion)
-        .filter(
-            PolicyVersion.document_id == doc_id,
-            PolicyVersion.version == version,
-        )
+        .filter(PolicyVersion.document_id == doc_id, PolicyVersion.version == version)
         .first()
     )
     if not base:
@@ -260,7 +264,7 @@ def rollback_to_version(doc_id: int, version: int, db: Session = Depends(get_db)
         document_id=doc_id,
         version=latest + 1,
         html=html,
-        params_json=base.params_json,  # reuse exact params
+        params_json=base.params_json,
     )
     db.add(v)
     d.updated_at = datetime.utcnow()
@@ -272,13 +276,9 @@ def rollback_to_version(doc_id: int, version: int, db: Session = Depends(get_db)
 
 @router.get("/{doc_id}/versions/{version}", response_model=VersionDetailOut)
 def get_version(doc_id: int, version: int, db: Session = Depends(get_db)):
-    """Fetch full details for a specific version, including HTML and params."""
     v = (
         db.query(PolicyVersion)
-        .filter(
-            PolicyVersion.document_id == doc_id,
-            PolicyVersion.version == version,
-        )
+        .filter(PolicyVersion.document_id == doc_id, PolicyVersion.version == version)
         .first()
     )
     if not v:
@@ -286,7 +286,7 @@ def get_version(doc_id: int, version: int, db: Session = Depends(get_db)):
 
     try:
         payload = json.loads(v.params_json)
-        params = DraftRequest.model_validate(payload)  # pydantic v2
+        params = DraftRequest.model_validate(payload)
     except Exception:
         params = DraftRequest(
             template_key="access_control_policy",
@@ -348,3 +348,63 @@ def delete_version(doc_id: int, version: int, db: Session = Depends(get_db)):
         d.updated_at = datetime.utcnow()
     db.commit()
     return None
+
+
+# -----------------------
+# Comment routes
+# -----------------------
+@router.get("/{doc_id}/comments", response_model=List[CommentOut])
+def list_comments(doc_id: int, version: Optional[int] = None, db: Session = Depends(get_db)):
+    q = db.query(PolicyComment).filter(PolicyComment.document_id == doc_id)
+    if version is not None:
+        q = q.filter(PolicyComment.version == version)
+    rows = q.order_by(PolicyComment.created_at.asc()).all()
+    return [
+        CommentOut(
+            id=r.id,
+            document_id=r.document_id,
+            version=r.version,
+            author=r.author,
+            body=r.body,
+            created_at=r.created_at.isoformat(),
+        )
+        for r in rows
+    ]
+
+
+@router.post("/{doc_id}/comments", response_model=CommentOut, status_code=201)
+def create_comment(doc_id: int, payload: CommentIn, db: Session = Depends(get_db)):
+    d = db.get(PolicyDocument, doc_id)
+    if not d:
+        raise HTTPException(404, "Document not found")
+
+    if payload.version is not None:
+        exists = (
+            db.query(PolicyVersion)
+            .filter(
+                PolicyVersion.document_id == doc_id,
+                PolicyVersion.version == payload.version,
+            )
+            .first()
+        )
+        if not exists:
+            raise HTTPException(400, "Version not found")
+
+    c = PolicyComment(
+        document_id=doc_id,
+        version=payload.version,
+        author=(payload.author or "User").strip(),
+        body=payload.body.strip(),
+    )
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+
+    return CommentOut(
+        id=c.id,
+        document_id=c.document_id,
+        version=c.version,
+        author=c.author,
+        body=c.body,
+        created_at=c.created_at.isoformat(),
+    )

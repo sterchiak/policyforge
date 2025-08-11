@@ -5,86 +5,170 @@ import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import Card from "@/components/Card";
 import { api } from "@/lib/api";
-import { ArrowRight, PlusCircle, FileText, Activity } from "lucide-react";
+import { Activity, FileText, PlusCircle, ArrowRight } from "lucide-react";
 
-function HealthBadge({ status }: { status: string }) {
-  const ok = status?.toLowerCase() === "ok";
-  const cls = ok
-    ? "bg-green-100 text-green-700 border-green-200"
-    : "bg-amber-100 text-amber-800 border-amber-200";
-  return (
-    <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium ${cls}`}>
-      {status || "unknown"}
-    </span>
-  );
-}
+type Template = { key: string; title: string };
+type DocumentOut = {
+  id: number;
+  title: string;
+  template_key: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  latest_version: number;
+};
 
 export default function Dashboard() {
   const [health, setHealth] = useState<string>("checking...");
   const [templateCount, setTemplateCount] = useState<number>(0);
+  const [docCount, setDocCount] = useState<number>(0);
 
   useEffect(() => {
-    api.get("/health")
+    // API health
+    api
+      .get("/health")
       .then((r) => setHealth(r.data.status))
       .catch((e) => setHealth(`error: ${e.message}`));
-    api.get("/v1/policies/templates")
+
+    // Templates count
+    api
+      .get<Template[]>("/v1/policies/templates")
       .then((r) => setTemplateCount(Array.isArray(r.data) ? r.data.length : 0))
       .catch(() => setTemplateCount(0));
+
+    // Documents count (first page)
+    api
+      .get<DocumentOut[]>("/v1/documents")
+      .then((r) => setDocCount(Array.isArray(r.data) ? r.data.length : 0))
+      .catch(() => setDocCount(0));
   }, []);
 
   return (
     <AppShell>
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Policy Hub</h1>
-          <p className="text-sm text-gray-800">
+          <h1 className="text-2xl font-semibold">Policy Hub</h1>
+          <p className="text-sm text-gray-600">
             Create, manage, and export policies. History and approvals coming soon.
           </p>
         </div>
 
-        <Link
-          href="/policies"
-          className="inline-flex items-center gap-2 rounded-lg bg-black px-4 py-2 text-white"
-        >
-          <PlusCircle size={18} />
-          New Policy
-        </Link>
+        <div className="flex gap-2">
+          <Link
+            href="/policies"
+            className="inline-flex items-center gap-2 rounded-lg bg-black px-4 py-2 text-white"
+          >
+            <PlusCircle size={18} />
+            New Policy
+          </Link>
+          <Link
+            href="/documents"
+            className="inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm"
+          >
+            Documents
+          </Link>
+        </div>
       </div>
 
       <div className="grid gap-6 md:grid-cols-3">
+        {/* System Health */}
         <Card title="System Health">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-gray-900">
               <Activity size={18} />
               <span>API</span>
             </div>
-            <HealthBadge status={health} />
+            <span className="rounded bg-gray-100 px-2 py-1 text-sm">{health}</span>
           </div>
         </Card>
 
+        {/* Templates */}
         <Card title="Templates">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-gray-900">
               <FileText size={18} />
               <span>Available</span>
             </div>
-            <span className="text-2xl font-bold text-gray-900">{templateCount}</span>
+            <span className="text-xl font-semibold">{templateCount}</span>
           </div>
           <div className="mt-3 text-right">
             <Link
               href="/policies"
-              className="inline-flex items-center gap-1 text-sm text-gray-900 hover:underline"
+              className="inline-flex items-center gap-1 text-sm text-gray-700 hover:underline"
             >
               Browse templates <ArrowRight size={16} />
             </Link>
           </div>
         </Card>
 
-        <Card title="Coming Soon">
-          <ul className="list-inside list-disc text-sm text-gray-900">
-            <li>Version History & Approvals</li>
-            <li>DOCX Export</li>
-            <li>Framework Coverage (NIST, CIS, SOC 2)</li>
+        {/* Documents */}
+        <Card title="Documents">
+          <div className="flex items-center justify-between">
+            <span>Total</span>
+            <span className="text-xl font-semibold">{docCount}</span>
+          </div>
+          <div className="mt-3 text-right">
+            <Link
+              href="/documents"
+              className="text-sm text-gray-700 hover:underline"
+            >
+              Open documents →
+            </Link>
+          </div>
+        </Card>
+      </div>
+
+      {/* Roadmap */}
+      <div className="mt-6">
+        <Card title="Roadmap">
+          <ul className="space-y-2 text-sm">
+            {/* Shipped */}
+            <li className="flex items-center justify-between">
+              <span>Versioning & Compare</span>
+              <span className="rounded bg-green-100 px-2 py-0.5 text-xs text-green-700">
+                Shipped
+              </span>
+            </li>
+            <li className="flex items-center justify-between">
+              <span>Comments</span>
+              <span className="rounded bg-green-100 px-2 py-0.5 text-xs text-green-700">
+                Shipped
+              </span>
+            </li>
+            <li className="flex items-center justify-between">
+              <span>DOCX Export</span>
+              <span className="rounded bg-green-100 px-2 py-0.5 text-xs text-green-700">
+                Shipped
+              </span>
+            </li>
+
+            {/* Next */}
+            <li className="mt-2 flex items-center justify-between">
+              <span>Approvals workflow</span>
+              <span className="rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-700">
+                Next
+              </span>
+            </li>
+            <li className="flex items-center justify-between">
+              <span>Auth (Google) + org scoping</span>
+              <span className="rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-700">
+                Next
+              </span>
+            </li>
+
+            {/* Planned */}
+            <li className="mt-2 flex items-center justify-between">
+              <span>Search, tags & filters</span>
+              <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
+                Planned
+              </span>
+            </li>
+            <li className="flex items-center justify-between">
+              <span>Framework mappings (SOC 2, NIST, CIS)</span>
+              <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
+                Planned
+              </span>
+            </li>
           </ul>
         </Card>
       </div>

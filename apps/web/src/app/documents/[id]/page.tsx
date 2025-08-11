@@ -36,6 +36,15 @@ type VersionDetail = {
   params: DraftParams;
 };
 
+type Comment = {
+  id: number;
+  document_id: number;
+  version: number | null;
+  author: string;
+  body: string;
+  created_at: string;
+};
+
 function getFilenameFromDisposition(disposition?: string, fallback = "policy.html") {
   if (!disposition) return fallback;
   const m = disposition.match(/filename="(.+?)"/i);
@@ -97,6 +106,12 @@ export default function DocumentDetailPage() {
   const [paramChanges, setParamChanges] = useState<Array<{ key: string; before: string; after: string }>>([]);
   const [contentDiffHtml, setContentDiffHtml] = useState<string | null>(null);
 
+  // comments state
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [newComment, setNewComment] = useState("");
+  const [commentAuthor, setCommentAuthor] = useState("You");
+  const [commentOnlyCurrent, setCommentOnlyCurrent] = useState(true);
+
   const latestVersion = useMemo(() => doc?.latest_version ?? null, [doc]);
 
   // load document + latest version
@@ -114,6 +129,19 @@ export default function DocumentDetailPage() {
       .then((r) => setCurrent(r.data))
       .catch((e) => setErr(e.message));
   }, [docId]);
+
+  // load comments (toggle all vs current version)
+  useEffect(() => {
+    if (!docId) return;
+    const query =
+      commentOnlyCurrent && current?.version
+        ? `/v1/documents/${docId}/comments?version=${current.version}`
+        : `/v1/documents/${docId}/comments`;
+    api
+      .get<Comment[]>(query)
+      .then((r) => setComments(r.data))
+      .catch(() => setComments([]));
+  }, [docId, current?.version, commentOnlyCurrent]);
 
   const loadVersion = async (v: number) => {
     setErr(null);
@@ -295,6 +323,26 @@ export default function DocumentDetailPage() {
     }
   };
 
+  const onAddComment = async () => {
+    if (!newComment.trim()) return;
+    setErr(null);
+    setLoading(true);
+    try {
+      const payload = {
+        author: commentAuthor || "You",
+        body: newComment,
+        version: commentOnlyCurrent ? current?.version ?? null : null,
+      };
+      const res = await api.post<Comment>(`/v1/documents/${docId}/comments`, payload);
+      setComments((prev) => [...prev, res.data]);
+      setNewComment("");
+    } catch (e: any) {
+      setErr(e?.response?.data?.detail || e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <AppShell>
       {!doc ? (
@@ -382,42 +430,45 @@ export default function DocumentDetailPage() {
               </div>
 
               {/* Compare picker */}
-              <div className="mt-4 rounded-lg border p-3">
-                <div className="mb-2 text-sm font-semibold">Compare Versions</div>
-                <div className="flex items-center gap-2">
-                  <select
-                    className="w-full rounded border px-2 py-1 text-sm"
-                    value={compareA}
-                    onChange={(e) => setCompareA(Number(e.target.value) as number)}
-                  >
-                    <option value="">From…</option>
-                    {doc.versions.map((v) => (
-                      <option key={`a-${v.id}`} value={v.version}>
-                        v{v.version}
-                      </option>
-                    ))}
-                  </select>
-                  <span className="text-sm text-gray-500">→</span>
-                  <select
-                    className="w-full rounded border px-2 py-1 text-sm"
-                    value={compareB}
-                    onChange={(e) => setCompareB(Number(e.target.value) as number)}
-                  >
-                    <option value="">To…</option>
-                    {doc.versions.map((v) => (
-                      <option key={`b-${v.id}`} value={v.version}>
-                        v{v.version}
-                      </option>
-                    ))}
-                  </select>
+              {doc.versions.length >= 2 && (
+                <div className="mt-4 rounded-lg border p-3">
+                  <div className="mb-2 text-sm font-semibold">Compare Versions</div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      className="w-full rounded border px-2 py-1 text-sm"
+                      value={compareA}
+                      onChange={(e) =>
+                        setCompareA(e.target.value === "" ? "" : Number(e.target.value))
+                      }
+                    >
+                      <option value="">From…</option>
+                      {doc.versions.map((v) => (
+                        <option key={`a-${v.id}`} value={v.version}>
+                          v{v.version}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-sm text-gray-500">→</span>
+                    <select
+                      className="w-full rounded border px-2 py-1 text-sm"
+                      value={compareB}
+                      onChange={(e) =>
+                        setCompareB(e.target.value === "" ? "" : Number(e.target.value))
+                      }
+                    >
+                      <option value="">To…</option>
+                      {doc.versions.map((v) => (
+                        <option key={`b-${v.id}`} value={v.version}>
+                          v{v.version}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <button onClick={runCompare} className="mt-2 w-full rounded border px-2 py-1 text-sm">
+                    Compare
+                  </button>
                 </div>
-                <button
-                  onClick={runCompare}
-                  className="mt-2 w-full rounded border px-2 py-1 text-sm"
-                >
-                  Compare
-                </button>
-              </div>
+              )}
             </Card>
 
             <div className="space-y-6">
@@ -441,10 +492,7 @@ export default function DocumentDetailPage() {
                         Download DOCX
                       </button>
                     </div>
-                    <div
-                      className="prose max-w-none"
-                      dangerouslySetInnerHTML={{ __html: current.html }}
-                    />
+                    <div className="prose max-w-none" dangerouslySetInnerHTML={{ __html: current.html }} />
                   </>
                 )}
               </Card>
@@ -490,6 +538,61 @@ export default function DocumentDetailPage() {
                   )}
                 </Card>
               )}
+
+              {/* Comments */}
+              <Card title="Comments">
+                <div className="mb-3 flex items-center justify-between">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4"
+                      checked={commentOnlyCurrent}
+                      onChange={(e) => setCommentOnlyCurrent(e.target.checked)}
+                    />
+                    Only show for current version {current ? `(v${current.version})` : ""}
+                  </label>
+                </div>
+
+                {comments.length === 0 ? (
+                  <p className="text-sm text-gray-700">No comments yet.</p>
+                ) : (
+                  <ul className="space-y-3">
+                    {comments.map((c) => (
+                      <li key={c.id} className="rounded border p-2">
+                        <div className="mb-1 flex items-center justify-between text-xs text-gray-600">
+                          <span>
+                            {c.author} {c.version ? `• v${c.version}` : "• all versions"}
+                          </span>
+                          <span>{new Date(c.created_at).toLocaleString()}</span>
+                        </div>
+                        <div className="whitespace-pre-wrap text-sm text-gray-900">{c.body}</div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <div className="mt-4 space-y-2">
+                  <input
+                    className="w-full rounded border px-3 py-2 text-sm"
+                    placeholder="Your name (optional)"
+                    value={commentAuthor}
+                    onChange={(e) => setCommentAuthor(e.target.value)}
+                  />
+                  <textarea
+                    className="h-24 w-full rounded border px-3 py-2 text-sm"
+                    placeholder="Add a comment…"
+                    value={newComment}
+                    onChange={(e) => setNewComment(e.target.value)}
+                  />
+                  <button
+                    onClick={onAddComment}
+                    disabled={loading || !newComment.trim()}
+                    className="rounded border px-3 py-1.5 text-sm"
+                  >
+                    Add Comment
+                  </button>
+                </div>
+              </Card>
             </div>
           </div>
         </>
