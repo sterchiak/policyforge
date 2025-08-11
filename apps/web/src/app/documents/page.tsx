@@ -21,22 +21,27 @@ export default function DocumentsPage() {
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    api.get<DocumentOut[]>("/v1/documents")
-      .then(r => setDocs(r.data))
-      .catch(e => setErr(e.message));
+    api
+      .get<DocumentOut[]>("/v1/documents")
+      .then((r) => setDocs(r.data))
+      .catch((e) => setErr(e.message));
   }, []);
 
   return (
     <AppShell>
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Documents</h1>
-        <Link href="/policies" className="rounded bg-black px-4 py-2 text-white">New Policy</Link>
+        <Link href="/policies" className="rounded bg-black px-4 py-2 text-white">
+          New Policy
+        </Link>
       </div>
 
       <Card>
         {err && <p className="text-sm text-red-600">{err}</p>}
         {docs.length === 0 ? (
-          <p className="text-sm text-gray-700">No documents yet. Create one from the Policies page.</p>
+          <p className="text-sm text-gray-700">
+            No documents yet. Create one from the Policies page.
+          </p>
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -51,15 +56,22 @@ export default function DocumentsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {docs.map(d => (
+                {docs.map((d) => (
                   <tr key={d.id}>
                     <td className="py-2">{d.title}</td>
                     <td className="py-2">{d.template_key}</td>
                     <td className="py-2">{d.status}</td>
                     <td className="py-2">{d.latest_version}</td>
-                    <td className="py-2">{new Date(d.updated_at).toLocaleString()}</td>
                     <td className="py-2">
-                      <Link href="/policies" className="rounded border px-2 py-1">Open</Link>
+                      {new Date(d.updated_at).toLocaleString()}
+                    </td>
+                    <td className="py-2">
+                      <Link
+                        href={`/documents/${d.id}`}
+                        className="rounded border px-2 py-1"
+                      >
+                        Open
+                      </Link>
                     </td>
                   </tr>
                 ))}
