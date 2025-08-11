@@ -16,20 +16,27 @@ export default function Dashboard() {
   const [approvals, setApprovals] = useState<ApprovalsSummary>({ pending: 0, approved: 0, rejected: 0 });
 
   useEffect(() => {
-    api.get("/health")
+    // API health
+    api
+      .get("/health")
       .then((r) => setHealth(r.data.status === "ok" ? "ok" : "error"))
       .catch(() => setHealth("error"));
 
-    api.get("/v1/policies/templates")
+    // Template count
+    api
+      .get("/v1/policies/templates")
       .then((r) => setTemplateCount(Array.isArray(r.data) ? r.data.length : 0))
       .catch(() => setTemplateCount(0));
 
-    api.get("/v1/documents")
+    // Documents count
+    api
+      .get("/v1/documents")
       .then((r) => setDocCount(Array.isArray(r.data) ? r.data.length : 0))
       .catch(() => setDocCount(0));
 
-    // If you added the summary endpoint earlier:
-    api.get("/v1/approvals/summary")
+    // Approvals summary (latest-version aware)
+    api
+      .get<ApprovalsSummary>("/v1/documents/approvals/summary_all", { params: { scope: "latest" } })
       .then((r) => setApprovals(r.data))
       .catch(() => setApprovals({ pending: 0, approved: 0, rejected: 0 }));
   }, []);
@@ -114,7 +121,7 @@ export default function Dashboard() {
 
       {/* Approvals + Roadmap */}
       <div className="mt-6 grid gap-6 md:grid-cols-3">
-        <Card title="Approvals">
+        <Card title="Approvals (latest version)">
           <div className="grid grid-cols-3 gap-3">
             <div className="rounded-lg border bg-white p-4 text-center">
               <div className="text-sm text-gray-600">Pending</div>
@@ -152,7 +159,7 @@ export default function Dashboard() {
             </li>
             <li className="flex items-center justify-between">
               <span className="text-gray-900">Approvals workflow</span>
-              <span className="rounded bg-indigo-100 px-2 py-0.5 text-indigo-700">Next</span>
+              <span className="rounded bg-indigo-100 px-2 py-0.5 text-indigo-700">Live</span>
             </li>
             <li className="flex items-center justify-between">
               <span className="text-gray-900">Auth (Google) + org scoping</span>

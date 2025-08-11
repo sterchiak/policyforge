@@ -8,7 +8,7 @@ from typing import List, Optional, Literal, Dict
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from apps.api.app.db import get_db
 from apps.api.app.models import (
@@ -679,15 +679,42 @@ def approvals_summary_by_doc(scope: str = "any", db: Session = Depends(get_db)):
 
 
 @router.get("/approvals/summary_all")
-def approvals_summary_all(db: Session = Depends(get_db)):
-    rows = (
-        db.query(PolicyApproval.status, func.count(PolicyApproval.id))
-        .group_by(PolicyApproval.status)
-        .all()
-    )
-    d: Dict[str, int] = {st: count for st, count in rows}
+def approvals_summary_all(scope: str = "any", db: Session = Depends(get_db)):
+    """
+    Return total counts of approvals by status.
+
+    scope="any"    → counts across ALL versions (legacy behavior)
+    scope="latest" → counts only for each document's latest version, but also
+                      includes versionless (global) approvals.
+    """
+    if scope not in ("any", "latest"):
+        raise HTTPException(status_code=400, detail="Invalid scope")
+
+    base = db.query(PolicyApproval.status, func.count(PolicyApproval.id))
+
+    if scope == "latest":
+        latest_subq = (
+            db.query(
+                PolicyVersion.document_id,
+                func.max(PolicyVersion.version).label("latest_version"),
+            )
+            .group_by(PolicyVersion.document_id)
+            .subquery()
+        )
+        base = (
+            base.join(latest_subq, PolicyApproval.document_id == latest_subq.c.document_id)
+            .filter(
+                or_(
+                    PolicyApproval.version == latest_subq.c.latest_version,
+                    PolicyApproval.version.is_(None),  # count global approvals too
+                )
+            )
+        )
+
+    rows = base.group_by(PolicyApproval.status).all()
+    d = {st: count for st, count in rows}
     return {
-        "pending": d.get("pending", 0),
-        "approved": d.get("approved", 0),
-        "rejected": d.get("rejected", 0),
+        "pending": int(d.get("pending", 0)),
+        "approved": int(d.get("approved", 0)),
+        "rejected": int(d.get("rejected", 0)),
     }
