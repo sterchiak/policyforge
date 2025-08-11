@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { addRecent } from "@/lib/recents";
+
 
 type Template = { key: string; title: string };
 type DraftResponse = { title: string; html: string };
@@ -47,6 +49,20 @@ export default function PoliciesPage() {
     try {
       const res = await api.post<DraftResponse>("/v1/policies/draft", currentPayload());
       setPreview(res.data);
+      // right after setPreview(res.data);
+addRecent({
+  id: `${templateKey}-${Date.now()}`,
+  title: res.data.title,
+  templateKey,
+  orgName,
+  createdAt: new Date().toISOString(),
+  params: {
+    password_min_length: pwdLen,
+    mfa_required_roles: mfaRoles.split(",").map((s) => s.trim()).filter(Boolean),
+    log_retention_days: logDays,
+  },
+});
+
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e.message);
     } finally {
