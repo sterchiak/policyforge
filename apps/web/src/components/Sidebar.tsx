@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, FileText, Settings } from "lucide-react";
+import { LayoutDashboard, FileText, Settings, FolderClosed as Folder } from "lucide-react";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/policies",  label: "Policies",  icon: FileText },
-  { href: "/documents", label: "Documents", icon: Settings },
+  { href: "/documents", label: "Documents", icon: Folder },
   { href: "/settings",  label: "Settings",  icon: Settings },
 ];
 

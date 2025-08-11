@@ -5,6 +5,10 @@ from pydantic import BaseModel, Field
 from typing import List
 from playwright.sync_api import sync_playwright  # sync API to avoid async syntax issues
 import re
+from fastapi.responses import StreamingResponse
+from io import BytesIO
+from docx import Document
+from htmldocx import HtmlToDocx
 
 router = APIRouter(prefix="/v1/policies", tags=["policies"])
 
@@ -145,5 +149,31 @@ def export_pdf(req: DraftRequest):
     return Response(
         content=pdf,
         media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+@router.post("/export/docx")
+def export_docx(req: DraftRequest):
+    # validate template exists
+    title_map = {t.key: t.title for t in TEMPLATES}
+    if req.template_key not in title_map:
+        raise HTTPException(status_code=400, detail="Unknown template_key")
+
+    html = render_html(req)
+    title = title_map[req.template_key]
+    filename = f"{_slugify(title)}.docx"
+
+    # Convert HTML -> DOCX using python-docx + htmldocx
+    doc = Document()
+    parser = HtmlToDocx()
+    parser.add_html_to_document(html, doc)
+
+    buf = BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
