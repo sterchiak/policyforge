@@ -5,8 +5,8 @@ from datetime import datetime
 import json
 from typing import List, Optional, Literal, Dict
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 
@@ -19,6 +19,10 @@ from apps.api.app.models import (
 )
 from apps.api.routes.policies import DraftRequest, render_html, TEMPLATES
 from apps.api.app.auth import get_current_user, require_roles, UserPrincipal
+
+# Email helper (no-op if EMAIL_ENABLED=false)
+from apps.api.app.email import send_email
+from apps.api.app.models import PolicyNotification
 
 router = APIRouter(prefix="/v1/documents", tags=["documents"])
 
@@ -76,10 +80,18 @@ class CommentOut(BaseModel):
 
 
 # Approvals I/O
+class NotifyPayload(BaseModel):
+    to: List[EmailStr] = []
+    cc: Optional[List[EmailStr]] = None
+    bcc: Optional[List[EmailStr]] = None
+
+
 class ApprovalIn(BaseModel):
     reviewer: str
     version: Optional[int] = None
     note: Optional[str] = None
+    # NEW: optional email notification
+    notify: Optional[NotifyPayload] = None
 
 
 class ApprovalOut(BaseModel):
@@ -97,6 +109,8 @@ class ApprovalUpdate(BaseModel):
     status: Literal["approved", "rejected"]
     note: Optional[str] = None
     reviewer: Optional[str] = None  # allow updating display name/email
+    # NEW: optional email notification to inform stakeholders of the decision
+    notify: Optional[NotifyPayload] = None
 
 
 # -----------------------
@@ -123,6 +137,26 @@ def _doc_to_out(db: Session, d: PolicyDocument) -> DocumentOut:
         latest_version=_latest_version(db, d.id),
     )
 
+def _notify_user(
+    db: Session,
+    target_email: str,
+    ntype: str,
+    message: str,
+    document_id: int | None = None,
+    version: int | None = None,
+    approval_id: int | None = None,
+) -> None:
+    if not target_email:
+        return
+    n = PolicyNotification(
+        target_email=target_email.strip(),
+        type=ntype,
+        message=message.strip(),
+        document_id=document_id,
+        version=version,
+        approval_id=approval_id,
+    )
+    db.add(n)
 
 # -----------------------
 # Document & Version routes
@@ -549,8 +583,10 @@ def list_approvals(doc_id: int, version: Optional[int] = None, db: Session = Dep
 def create_approval(
     doc_id: int,
     payload: ApprovalIn,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: UserPrincipal = Depends(get_current_user),
+      # <-- direct injection, no Depends()
 ):
     d = db.get(PolicyDocument, doc_id)
     if not d:
@@ -573,8 +609,48 @@ def create_approval(
         note=(payload.note or "").strip() or None,
     )
     db.add(a)
+
+    # (optional in-app notification/email hooks here)
+
     db.commit()
     db.refresh(a)
+
+    return ApprovalOut(
+        id=a.id,
+        document_id=a.document_id,
+        version=a.version,
+        reviewer=a.reviewer,
+        status=a.status,  # type: ignore
+        note=a.note,
+        requested_at=a.requested_at.isoformat(),
+        decided_at=None,
+    )
+
+    # ---- Email notification (optional) ----
+    if payload.notify and payload.notify.to:
+        target_version = payload.version if payload.version is not None else _latest_version(db, doc_id)
+        subject = f"[PolicyForge] Approval requested: {d.title} v{target_version}"
+        notes_html = f"<p><em>Notes:</em> {payload.note}</p>" if payload.note else ""
+        html = f"""
+        <div style="font-family:Inter,system-ui,-apple-system,sans-serif">
+          <h2>Approval Requested</h2>
+          <p><strong>{d.title}</strong> (v{target_version}) requires review.</p>
+          <p><strong>Reviewer:</strong> {a.reviewer}</p>
+          {notes_html}
+          <p>Open the application to approve or reject.</p>
+          <hr/>
+          <small>Doc ID: {doc_id} • Approval ID: {a.id}</small>
+        </div>
+        """
+        send_email(
+            background_tasks,
+            subject,
+            html,
+            payload.notify.to,
+            cc=payload.notify.cc,
+            bcc=payload.notify.bcc,
+        )
+    # ---------------------------------------
 
     return ApprovalOut(
         id=a.id,
@@ -597,8 +673,10 @@ def decide_approval(
     doc_id: int,
     approval_id: int,
     payload: ApprovalUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: UserPrincipal = Depends(get_current_user),
+      # <-- direct injection, no Depends()
 ):
     a = db.get(PolicyApproval, approval_id)
     if not a or a.document_id != doc_id:
@@ -611,8 +689,46 @@ def decide_approval(
         a.reviewer = payload.reviewer.strip()
     a.decided_at = datetime.utcnow()
 
+    # (optional in-app notification/email hooks here)
+
     db.commit()
     db.refresh(a)
+
+    return ApprovalOut(
+        id=a.id,
+        document_id=a.document_id,
+        version=a.version,
+        reviewer=a.reviewer,
+        status=a.status,  # type: ignore
+        note=a.note,
+        requested_at=a.requested_at.isoformat(),
+        decided_at=a.decided_at.isoformat() if a.decided_at else None,
+    )
+
+    # ---- Email notification (optional) ----
+    if payload.notify and payload.notify.to:
+        d = db.get(PolicyDocument, doc_id)
+        subject = f"[PolicyForge] {a.status.title()}: {d.title} v{a.version if a.version is not None else _latest_version(db, doc_id)}"
+        notes_html = f"<p><em>Notes:</em> {payload.note}</p>" if payload.note else ""
+        html = f"""
+        <div style="font-family:Inter,system-ui,-apple-system,sans-serif">
+          <h2>Approval {a.status.title()}</h2>
+          <p><strong>{d.title}</strong> (v{a.version if a.version is not None else 'latest'}) was {a.status}.</p>
+          <p><strong>Reviewer:</strong> {a.reviewer}</p>
+          {notes_html}
+          <hr/>
+          <small>Doc ID: {doc_id} • Approval ID: {approval_id}</small>
+        </div>
+        """
+        send_email(
+            background_tasks,
+            subject,
+            html,
+            payload.notify.to,
+            cc=payload.notify.cc,
+            bcc=payload.notify.bcc,
+        )
+    # ---------------------------------------
 
     return ApprovalOut(
         id=a.id,

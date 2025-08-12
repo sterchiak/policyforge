@@ -106,3 +106,24 @@ class PolicyApproval(Base):
     decided_at = Column(DateTime, nullable=True)
 
     document = relationship("PolicyDocument", back_populates="approvals")
+
+class PolicyNotification(Base):
+    __tablename__ = "policy_notifications"
+
+    id = Column(Integer, primary_key=True)
+    # who should see this (map to NextAuth user.email)
+    target_email = Column(String(255), index=True, nullable=False)
+
+    # e.g., "approval_requested", "approval_decided"
+    type = Column(String(50), nullable=False)
+
+    # short message to display in UI
+    message = Column(Text, nullable=False)
+
+    # useful links back to context
+    document_id = Column(Integer, nullable=True)
+    version = Column(Integer, nullable=True)
+    approval_id = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    read_at = Column(DateTime, nullable=True)

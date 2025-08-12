@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import Card from "@/components/Card";
 import { api } from "@/lib/api";
-import { Activity, FileText } from "lucide-react";
+import { Activity, FileText, Plus } from "lucide-react";
 
 type ApprovalsSummary = { pending: number; approved: number; rejected: number };
 
@@ -52,18 +52,15 @@ export default function Dashboard() {
         </div>
 
         <div className="flex gap-2">
-          <Link
-            href="/policies"
-            className="inline-flex items-center gap-2 rounded-lg bg-black px-4 py-2 text-white"
-          >
-            + New Policy
-          </Link>
-          <Link
-            href="/documents"
-            className="inline-flex items-center rounded-lg border px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
-          >
-            Documents
-          </Link>
+<Link
+  href="/policies"
+  className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-medium text-gray-900
+             border shadow-sm hover:bg-gray-50 active:bg-gray-100
+             focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+>
+  <Plus className="h-4 w-4" />
+  New Policy
+</Link>
         </div>
       </div>
 

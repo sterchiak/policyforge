@@ -5,6 +5,7 @@ import Link from "next/link";
 import AppShell from "@/components/AppShell";
 import Card from "@/components/Card";
 import { api } from "@/lib/api";
+import { Plus } from "lucide-react";
 
 type DocumentOut = {
   id: number;
@@ -114,9 +115,15 @@ export default function DocumentsPage() {
           <h1 className="text-2xl font-semibold text-gray-900">Documents</h1>
           <p className="text-sm text-gray-700">All policy documents with latest version and approvals status.</p>
         </div>
-        <Link href="/policies" className="rounded bg-black px-4 py-2 text-white">
-          New Policy
-        </Link>
+        <Link
+   href="/policies"
+   className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-medium text-gray-900
+              border shadow-sm hover:bg-gray-50 active:bg-gray-100
+              focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+ >
+   <Plus className="h-4 w-4" />
+   New Policy
+ </Link>
       </div>
 
       {/* Filters */}
