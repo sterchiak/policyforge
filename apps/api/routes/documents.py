@@ -196,6 +196,20 @@ def _get_or_create_user_by_email(db: Session, email: str) -> PolicyUser:
     db.add(u)
     db.flush()  # assigns u.id
     return u
+
+def _user_has_doc_role(db: Session, email: str, doc_id: int, allowed: tuple[str, ...] = ("owner", "approver")) -> bool:
+    e = (email or "").strip().lower()
+    if not e:
+        return False
+    u = db.query(PolicyUser.id).filter(PolicyUser.email == e).first()
+    if not u:
+        return False
+    return db.query(PolicyDocumentOwner.id).filter(
+        PolicyDocumentOwner.document_id == doc_id,
+        PolicyDocumentOwner.user_id == u[0],
+        PolicyDocumentOwner.role.in_(allowed),
+    ).first() is not None
+
 # -----------------------
 # Document & Version routes
 # -----------------------
@@ -237,7 +251,7 @@ def create_document(
         params_json=json.dumps(req.model_dump()),
     )
     db.add(ver)
-    
+
     if user and getattr(user, "email", None):
         creator = _get_or_create_user_by_email(db, user.email)
         exists = (
@@ -757,6 +771,10 @@ def decide_approval(
     db: Session = Depends(get_db),
     user: UserPrincipal = Depends(get_current_user),
 ):
+    
+    if not _user_has_doc_role(db, getattr(user, "email", ""), doc_id, allowed=("owner", "approver")):
+        raise HTTPException(status_code=403, detail="Only document owners or approvers can decide approvals")
+
     a = db.get(PolicyApproval, approval_id)
     if not a or a.document_id != doc_id:
         raise HTTPException(status_code=404, detail="Approval not found")
