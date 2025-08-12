@@ -8,6 +8,7 @@ import AppShell from "@/components/AppShell";
 import Card from "@/components/Card";
 import { api } from "@/lib/api";
 import { diffWords } from "diff";
+import OwnersPanel from "@/components/OwnersPanel";
 
 type VersionRow = { id: number; version: number; created_at: string };
 type DocumentDetail = {
@@ -389,7 +390,7 @@ export default function DocumentDetailPage() {
       // reflect doc state immediately
       setStatus("in_review");
 
-      // (optional) ensure absolute truth from backend
+      // // authoritative refresh of doc meta/status (optional)
       // const meta = await api.get<DocumentDetail>(`/v1/documents/${docId}`);
       // setDoc(meta.data);
       // setStatus(meta.data.status as any);
@@ -434,13 +435,19 @@ export default function DocumentDetailPage() {
             <div>
               <h1 className="text-2xl font-semibold flex items-center gap-2">
                 {doc.title}
-                <span className={`rounded px-2 py-0.5 text-xs ${
-                  status === "approved" ? "bg-green-100 text-green-700" :
-                  status === "rejected" ? "bg-red-100 text-red-700" :
-                  status === "in_review" ? "bg-yellow-100 text-yellow-700" :
-                  status === "published" ? "bg-blue-100 text-blue-700" :
-                  "bg-gray-100 text-gray-700"
-                }`}>
+                <span
+                  className={`rounded px-2 py-0.5 text-xs ${
+                    status === "approved"
+                      ? "bg-green-100 text-green-700"
+                      : status === "rejected"
+                      ? "bg-red-100 text-red-700"
+                      : status === "in_review"
+                      ? "bg-yellow-100 text-yellow-700"
+                      : status === "published"
+                      ? "bg-blue-100 text-blue-700"
+                      : "bg-gray-100 text-gray-700"
+                  }`}
+                >
                   {status}
                 </span>
               </h1>
@@ -607,7 +614,7 @@ export default function DocumentDetailPage() {
               </Card>
             </div>
 
-            {/* RIGHT: Preview + Comparison + Comments + Approvals List */}
+            {/* RIGHT: Preview + Owners + Comparison + Comments + Approvals List */}
             <div className="space-y-6">
               <Card title={`Preview ${current ? `(v${current.version})` : ""}`}>
                 {err && <p className="mb-3 text-sm text-red-600">{err}</p>}
@@ -640,6 +647,9 @@ export default function DocumentDetailPage() {
                   </>
                 )}
               </Card>
+
+              {/* NEW: Owners panel */}
+              <OwnersPanel docId={docId} />
 
               {(paramChanges.length > 0 || contentDiffHtml) && (
                 <Card title="Comparison">

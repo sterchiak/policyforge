@@ -24,6 +24,8 @@ from apps.api.app.auth import get_current_user, require_roles, UserPrincipal
 from apps.api.app.email import send_email
 from apps.api.app.models import PolicyNotification
 
+from apps.api.app.models import PolicyUser, PolicyDocumentOwner
+
 router = APIRouter(prefix="/v1/documents", tags=["documents"])
 
 
@@ -112,6 +114,16 @@ class ApprovalUpdate(BaseModel):
     # NEW: optional email notification to inform stakeholders of the decision
     notify: Optional[NotifyPayload] = None
 
+class DocOwnerIn(BaseModel):
+    email: EmailStr
+    role: str = "owner"  # owner|editor|viewer|approver
+
+class DocOwnerOut(BaseModel):
+    id: int
+    user_id: int
+    email: str
+    name: str | None
+    role: str
 
 # -----------------------
 # Helpers
@@ -149,7 +161,7 @@ def _notify_user(
     if not target_email:
         return
     n = PolicyNotification(
-        target_email=target_email.strip(),
+        target_email=target_email.strip().lower(),
         type=ntype,
         message=message.strip(),
         document_id=document_id,
@@ -158,6 +170,32 @@ def _notify_user(
     )
     db.add(n)
 
+def _get_or_create_user_by_email(db: Session, email: str) -> PolicyUser:
+    e = email.strip().lower()
+    u = db.query(PolicyUser).filter(PolicyUser.email == e).first()
+    if u: return u
+    u = PolicyUser(email=e, role="viewer")
+    db.add(u); db.flush()
+    return u
+
+def _owner_emails(db: Session, doc_id: int, roles: tuple[str,...] = ("owner","approver")) -> list[str]:
+    rows = (
+        db.query(PolicyUser.email)
+        .join(PolicyDocumentOwner, PolicyDocumentOwner.user_id == PolicyUser.id)
+        .filter(PolicyDocumentOwner.document_id == doc_id, PolicyDocumentOwner.role.in_(roles))
+        .all()
+    )
+    return [r[0].strip().lower() for r in rows]
+
+def _get_or_create_user_by_email(db: Session, email: str) -> PolicyUser:
+    e = (email or "").strip().lower()
+    u = db.query(PolicyUser).filter(PolicyUser.email == e).first()
+    if u:
+        return u
+    u = PolicyUser(email=e, role="viewer")
+    db.add(u)
+    db.flush()  # assigns u.id
+    return u
 # -----------------------
 # Document & Version routes
 # -----------------------
@@ -199,6 +237,19 @@ def create_document(
         params_json=json.dumps(req.model_dump()),
     )
     db.add(ver)
+    
+    if user and getattr(user, "email", None):
+        creator = _get_or_create_user_by_email(db, user.email)
+        exists = (
+            db.query(PolicyDocumentOwner)
+            .filter(
+                PolicyDocumentOwner.document_id == doc.id,
+                PolicyDocumentOwner.user_id == creator.id,
+            )
+            .first()
+        )
+        if not exists:
+            db.add(PolicyDocumentOwner(document_id=doc.id, user_id=creator.id, role="owner"))
 
     doc.updated_at = datetime.utcnow()
     db.commit()
@@ -580,6 +631,7 @@ def list_approvals(doc_id: int, version: Optional[int] = None, db: Session = Dep
     status_code=201,
     dependencies=[Depends(require_roles("owner", "admin", "editor"))],
 )
+
 def create_approval(
     doc_id: int,
     payload: ApprovalIn,
@@ -609,11 +661,14 @@ def create_approval(
     )
     db.add(a)
 
-    # In-app notifications (reviewer + requester), committed with the approval
+    # In-app notifications (reviewer + requester + owners), committed with the approval
     ver_label = payload.version if payload.version is not None else _latest_version(db, doc_id)
+    reviewer_email = (payload.reviewer or "").strip().lower()
+    actor_email = (user.email or "").strip().lower()
+
     _notify_user(
         db,
-        target_email=payload.reviewer,  # reviewer inbox
+        target_email=reviewer_email,
         ntype="approval_requested",
         message=f"Approval requested for '{d.title}' v{ver_label}",
         document_id=doc_id,
@@ -622,13 +677,21 @@ def create_approval(
     )
     _notify_user(
         db,
-        target_email=user.email,        # requester sees their own action
+        target_email=actor_email,
         ntype="approval_requested",
         message=f"You requested approval for '{d.title}' v{ver_label}",
         document_id=doc_id,
         version=payload.version,
         approval_id=a.id if a.id else None,
     )
+
+    # Owners (owner/approver roles), de-duped
+    for em in set(_owner_emails(db, doc_id)) - {reviewer_email, actor_email}:
+        _notify_user(
+            db, em, "approval_requested",
+            f"Approval requested for '{d.title}' v{ver_label}",
+            document_id=doc_id, version=payload.version, approval_id=a.id if a.id else None
+        )
 
     db.commit()
     db.refresh(a)
@@ -705,12 +768,14 @@ def decide_approval(
         a.reviewer = payload.reviewer.strip()
     a.decided_at = datetime.utcnow()
 
-    # In-app notifications (reviewer + actor), committed with the decision
     d = db.get(PolicyDocument, doc_id)
     ver_label = a.version if a.version is not None else _latest_version(db, doc_id)
+    reviewer_email = (a.reviewer or "").strip().lower()
+    actor_email = (user.email or "").strip().lower()
+
     _notify_user(
         db,
-        target_email=a.reviewer,  # reviewer sees the outcome in their feed
+        target_email=reviewer_email,
         ntype="approval_decided",
         message=f"'{d.title}' v{ver_label} was {a.status}",
         document_id=doc_id,
@@ -719,13 +784,20 @@ def decide_approval(
     )
     _notify_user(
         db,
-        target_email=user.email,  # actor sees their own action
+        target_email=actor_email,
         ntype="approval_decided",
         message=f"You {a.status} '{d.title}' v{ver_label}",
         document_id=doc_id,
         version=a.version,
         approval_id=a.id,
     )
+
+    for em in set(_owner_emails(db, doc_id)) - {reviewer_email, actor_email}:
+        _notify_user(
+            db, em, "approval_decided",
+            f"'{d.title}' v{ver_label} was {a.status}",
+            document_id=doc_id, version=a.version, approval_id=a.id
+        )
 
     db.commit()
     db.refresh(a)
@@ -869,3 +941,38 @@ def approvals_summary_all(scope: str = "any", db: Session = Depends(get_db)):
         "approved": int(d.get("approved", 0)),
         "rejected": int(d.get("rejected", 0)),
     }
+
+@router.get("/{doc_id}/owners", response_model=list[DocOwnerOut], dependencies=[Depends(require_roles("owner","admin","editor","viewer","approver"))])
+def list_doc_owners(doc_id: int, db: Session = Depends(get_db)):
+    rows = (
+        db.query(PolicyDocumentOwner, PolicyUser)
+        .join(PolicyUser, PolicyUser.id == PolicyDocumentOwner.user_id)
+        .filter(PolicyDocumentOwner.document_id == doc_id)
+        .order_by(PolicyUser.email.asc())
+        .all()
+    )
+    out: list[DocOwnerOut] = []
+    for o,u in rows:
+        out.append(DocOwnerOut(id=o.id, user_id=u.id, email=u.email, name=u.name, role=o.role))
+    return out
+
+@router.post("/{doc_id}/owners", response_model=DocOwnerOut, status_code=201, dependencies=[Depends(require_roles("owner","admin","editor"))])
+def add_doc_owner(doc_id: int, payload: DocOwnerIn, db: Session = Depends(get_db)):
+    d = db.get(PolicyDocument, doc_id)
+    if not d: raise HTTPException(status_code=404, detail="Document not found")
+    u = _get_or_create_user_by_email(db, payload.email)
+    exists = db.query(PolicyDocumentOwner).filter(PolicyDocumentOwner.document_id==doc_id, PolicyDocumentOwner.user_id==u.id).first()
+    if exists:
+        exists.role = payload.role
+        db.commit(); db.refresh(exists)
+        return DocOwnerOut(id=exists.id, user_id=u.id, email=u.email, name=u.name, role=exists.role)
+    o = PolicyDocumentOwner(document_id=doc_id, user_id=u.id, role=payload.role)
+    db.add(o); db.commit(); db.refresh(o)
+    return DocOwnerOut(id=o.id, user_id=u.id, email=u.email, name=u.name, role=o.role)
+
+@router.delete("/{doc_id}/owners/{user_id}", status_code=204, dependencies=[Depends(require_roles("owner","admin","editor"))])
+def remove_doc_owner(doc_id: int, user_id: int, db: Session = Depends(get_db)):
+    o = db.query(PolicyDocumentOwner).filter(PolicyDocumentOwner.document_id==doc_id, PolicyDocumentOwner.user_id==user_id).first()
+    if not o: return None
+    db.delete(o); db.commit()
+    return None

@@ -127,3 +127,25 @@ class PolicyNotification(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     read_at = Column(DateTime, nullable=True)
+
+class PolicyUser(Base):
+    __tablename__ = "policy_users"
+    id = Column(Integer, primary_key=True)
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    name = Column(String(255), nullable=True)
+    # Optional org scoping later
+    org_id = Column(Integer, nullable=True)
+    # Global role (still used by your auth guards today)
+    role = Column(String(50), nullable=False, default="viewer")  # owner|admin|editor|viewer|approver
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+class PolicyDocumentOwner(Base):
+    __tablename__ = "policy_document_owners"
+    id = Column(Integer, primary_key=True)
+    document_id = Column(Integer, ForeignKey("policy_documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("policy_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(50), nullable=False, default="owner")  # owner|editor|viewer|approver
+
+    __table_args__ = (UniqueConstraint("document_id", "user_id", name="uq_doc_user"),)
+
+    user = relationship("PolicyUser")
