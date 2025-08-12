@@ -586,7 +586,6 @@ def create_approval(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: UserPrincipal = Depends(get_current_user),
-      # <-- direct injection, no Depends()
 ):
     d = db.get(PolicyDocument, doc_id)
     if not d:
@@ -610,7 +609,26 @@ def create_approval(
     )
     db.add(a)
 
-    # (optional in-app notification/email hooks here)
+    # In-app notifications (reviewer + requester), committed with the approval
+    ver_label = payload.version if payload.version is not None else _latest_version(db, doc_id)
+    _notify_user(
+        db,
+        target_email=payload.reviewer,  # reviewer inbox
+        ntype="approval_requested",
+        message=f"Approval requested for '{d.title}' v{ver_label}",
+        document_id=doc_id,
+        version=payload.version,
+        approval_id=a.id if a.id else None,
+    )
+    _notify_user(
+        db,
+        target_email=user.email,        # requester sees their own action
+        ntype="approval_requested",
+        message=f"You requested approval for '{d.title}' v{ver_label}",
+        document_id=doc_id,
+        version=payload.version,
+        approval_id=a.id if a.id else None,
+    )
 
     db.commit()
     db.refresh(a)
@@ -625,7 +643,6 @@ def create_approval(
         requested_at=a.requested_at.isoformat(),
         decided_at=None,
     )
-
     # ---- Email notification (optional) ----
     if payload.notify and payload.notify.to:
         target_version = payload.version if payload.version is not None else _latest_version(db, doc_id)
@@ -676,7 +693,6 @@ def decide_approval(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: UserPrincipal = Depends(get_current_user),
-      # <-- direct injection, no Depends()
 ):
     a = db.get(PolicyApproval, approval_id)
     if not a or a.document_id != doc_id:
@@ -689,7 +705,27 @@ def decide_approval(
         a.reviewer = payload.reviewer.strip()
     a.decided_at = datetime.utcnow()
 
-    # (optional in-app notification/email hooks here)
+    # In-app notifications (reviewer + actor), committed with the decision
+    d = db.get(PolicyDocument, doc_id)
+    ver_label = a.version if a.version is not None else _latest_version(db, doc_id)
+    _notify_user(
+        db,
+        target_email=a.reviewer,  # reviewer sees the outcome in their feed
+        ntype="approval_decided",
+        message=f"'{d.title}' v{ver_label} was {a.status}",
+        document_id=doc_id,
+        version=a.version,
+        approval_id=a.id,
+    )
+    _notify_user(
+        db,
+        target_email=user.email,  # actor sees their own action
+        ntype="approval_decided",
+        message=f"You {a.status} '{d.title}' v{ver_label}",
+        document_id=doc_id,
+        version=a.version,
+        approval_id=a.id,
+    )
 
     db.commit()
     db.refresh(a)
@@ -704,7 +740,6 @@ def decide_approval(
         requested_at=a.requested_at.isoformat(),
         decided_at=a.decided_at.isoformat() if a.decided_at else None,
     )
-
     # ---- Email notification (optional) ----
     if payload.notify and payload.notify.to:
         d = db.get(PolicyDocument, doc_id)
