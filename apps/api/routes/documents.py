@@ -8,7 +8,7 @@ from typing import List, Optional, Literal, Dict
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, case
 
 from apps.api.app.db import get_db
 from apps.api.app.models import (
@@ -124,6 +124,21 @@ class DocOwnerOut(BaseModel):
     email: str
     name: str | None
     role: str
+
+# --- Approvals: "mine" view
+class ApprovalMineOut(ApprovalOut):
+    document_title: str
+
+# --- Ownership coverage
+class CoverageDocOut(BaseModel):
+    document_id: int
+    title: str
+    updated_at: str
+
+class OwnershipCoverageOut(BaseModel):
+    no_owner: List[CoverageDocOut]
+    no_approver: List[CoverageDocOut]
+    totals: Dict[str, int]
 
 # -----------------------
 # Helpers
@@ -830,6 +845,52 @@ def decide_approval(
         requested_at=a.requested_at.isoformat(),
         decided_at=a.decided_at.isoformat() if a.decided_at else None,
     )
+
+@router.get("/approvals/mine", response_model=List[ApprovalMineOut])
+def approvals_mine(
+    status: Optional[Literal["pending", "approved", "rejected"]] = "pending",
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    user: UserPrincipal = Depends(get_current_user),
+):
+    email = (getattr(user, "email", "") or "").strip().lower()
+    display_name = (getattr(user, "name", "") or "").strip()
+    if not email and not display_name:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    q = (
+        db.query(PolicyApproval, PolicyDocument.title)
+        .join(PolicyDocument, PolicyDocument.id == PolicyApproval.document_id)
+    )
+
+    # Primary match by email (case-insensitive), fallback to name
+    if email:
+        q = q.filter(func.lower(PolicyApproval.reviewer) == email)
+    else:
+        q = q.filter(PolicyApproval.reviewer == display_name)
+
+    if status in ("pending", "approved", "rejected"):
+        q = q.filter(PolicyApproval.status == status)
+
+    rows = q.order_by(PolicyApproval.requested_at.desc()).limit(limit).all()
+
+    out: List[ApprovalMineOut] = []
+    for a, title in rows:
+        out.append(
+            ApprovalMineOut(
+                id=a.id,
+                document_id=a.document_id,
+                version=a.version,
+                reviewer=a.reviewer,
+                status=a.status,  # type: ignore
+                note=a.note,
+                requested_at=a.requested_at.isoformat(),
+                decided_at=a.decided_at.isoformat() if a.decided_at else None,
+                document_title=title,
+            )
+        )
+    return out
+
     # ---- Email notification (optional) ----
     if payload.notify and payload.notify.to:
         d = db.get(PolicyDocument, doc_id)
@@ -994,3 +1055,48 @@ def remove_doc_owner(doc_id: int, user_id: int, db: Session = Depends(get_db)):
     if not o: return None
     db.delete(o); db.commit()
     return None
+
+@router.get("/ownership_coverage", response_model=OwnershipCoverageOut)
+def ownership_coverage(limit: int = 10, db: Session = Depends(get_db)):
+    # Count owners/approvers per document
+    role_counts = (
+        db.query(
+            PolicyDocumentOwner.document_id.label("doc_id"),
+            func.sum(case((PolicyDocumentOwner.role == "owner", 1), else_=0)).label("owner_count"),
+            func.sum(case((PolicyDocumentOwner.role == "approver", 1), else_=0)).label("approver_count"),
+        )
+        .group_by(PolicyDocumentOwner.document_id)
+        .subquery()
+    )
+
+    rows = (
+        db.query(
+            PolicyDocument.id,
+            PolicyDocument.title,
+            PolicyDocument.updated_at,
+            role_counts.c.owner_count,
+            role_counts.c.approver_count,
+        )
+        .outerjoin(role_counts, PolicyDocument.id == role_counts.c.doc_id)
+        .order_by(PolicyDocument.updated_at.desc())
+        .all()
+    )
+
+    no_owner: List[CoverageDocOut] = []
+    no_approver: List[CoverageDocOut] = []
+
+    for doc_id, title, updated_at, owner_count, approver_count in rows:
+        if (owner_count or 0) <= 0:
+            no_owner.append(
+                CoverageDocOut(document_id=doc_id, title=title, updated_at=updated_at.isoformat())
+            )
+        if (approver_count or 0) <= 0:
+            no_approver.append(
+                CoverageDocOut(document_id=doc_id, title=title, updated_at=updated_at.isoformat())
+            )
+
+    return OwnershipCoverageOut(
+        no_owner=no_owner[:limit],
+        no_approver=no_approver[:limit],
+        totals={"no_owner": len(no_owner), "no_approver": len(no_approver)},
+    )

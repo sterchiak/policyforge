@@ -58,6 +58,14 @@ type Approval = {
   decided_at: string | null;
 };
 
+type DocOwner = {
+  id: number;
+  user_id: number;
+  email: string;
+  name?: string | null;
+  role: "owner" | "editor" | "viewer" | "approver";
+};
+
 function getFilenameFromDisposition(disposition?: string, fallback = "policy.html") {
   if (!disposition) return fallback;
   const m = disposition.match(/filename="(.+?)"/i);
@@ -107,7 +115,6 @@ export default function DocumentDetailPage() {
   const { data: session } = useSession();
   const isAuthed = Boolean(session?.user);
   const role = (session?.user as any)?.role ?? "viewer";
-  const canApprove = ["owner", "admin", "approver"].includes(role);
   const canRequestApproval = ["owner", "admin", "editor"].includes(role);
 
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
@@ -117,7 +124,7 @@ export default function DocumentDetailPage() {
 
   // editable meta
   const [title, setTitle] = useState("");
-  const [status, setStatus] = useState<typeof STATUS_OPTS[number]>("draft");
+  const [status, setStatus] = useState<(typeof STATUS_OPTS)[number]>("draft");
 
   // compare state
   const [compareA, setCompareA] = useState<number | "">("");
@@ -136,6 +143,21 @@ export default function DocumentDetailPage() {
   const [onlyCurrentApprovals, setOnlyCurrentApprovals] = useState(true);
   const [newReviewer, setNewReviewer] = useState("");
   const [newApprovalNote, setNewApprovalNote] = useState("");
+
+  // --- doc-level owners for gating approve/reject ---
+  const [owners, setOwners] = useState<DocOwner[]>([]);
+  useEffect(() => {
+    if (!docId) return;
+    api
+      .get<DocOwner[]>(`/v1/documents/${docId}/owners`)
+      .then((r) => setOwners(r.data || []))
+      .catch(() => setOwners([]));
+  }, [docId]);
+
+  const sessionEmail = ((session?.user as any)?.email || "").toString().trim().toLowerCase();
+  const canApproveDoc = owners.some(
+    (o) => (o.role === "owner" || o.role === "approver") && o.email.trim().toLowerCase() === sessionEmail
+  );
 
   const latestVersion = useMemo(() => doc?.latest_version ?? null, [doc]);
 
@@ -389,11 +411,6 @@ export default function DocumentDetailPage() {
 
       // reflect doc state immediately
       setStatus("in_review");
-
-      // // authoritative refresh of doc meta/status (optional)
-      // const meta = await api.get<DocumentDetail>(`/v1/documents/${docId}`);
-      // setDoc(meta.data);
-      // setStatus(meta.data.status as any);
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e.message);
     } finally {
@@ -648,7 +665,7 @@ export default function DocumentDetailPage() {
                 )}
               </Card>
 
-              {/* NEW: Owners panel */}
+              {/* Owners panel */}
               <OwnersPanel docId={docId} />
 
               {(paramChanges.length > 0 || contentDiffHtml) && (
@@ -813,7 +830,7 @@ export default function DocumentDetailPage() {
                             {a.decided_at ? `Decided ${new Date(a.decided_at).toLocaleString()}` : "Awaiting decision"}
                           </span>
                         </div>
-                        {a.status === "pending" && canApprove ? (
+                        {a.status === "pending" && canApproveDoc ? (
                           <div className="mt-2 flex gap-2">
                             <button
                               onClick={() => onDecideApproval(a.id, "approved")}
