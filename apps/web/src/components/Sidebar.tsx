@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, FileText, Folder, Settings, Users } from "lucide-react";
+import { LayoutDashboard, FileText, Folder, Settings, Users, Boxes } from "lucide-react";
 
 type Item = {
   href: string;
@@ -14,6 +14,7 @@ const NAV: Item[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/policies",  label: "Policies",  icon: FileText },
   { href: "/documents", label: "Documents", icon: Folder },
+  { href: "/frameworks", label: "Frameworks", icon: Boxes },
   { href: "/team",      label: "Team",      icon: Users },
   { href: "/settings",  label: "Settings",  icon: Settings },
 ];

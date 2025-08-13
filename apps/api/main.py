@@ -12,7 +12,7 @@ from apps.api.routes.policies import router as policies_router
 from apps.api.routes.documents import router as documents_router
 from apps.api.routes.notifications import router as notifications_router  # new
 from apps.api.routes.users import router as users_router
-
+from apps.api.routes.frameworks import router as frameworks_router
 
 # Build the final allowlist (env + common localhosts), de-duped
 _default_dev_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
@@ -47,6 +47,7 @@ app.include_router(policies_router)
 app.include_router(documents_router)
 app.include_router(notifications_router)  # adds /v1/notifications/*
 app.include_router(users_router)
+app.include_router(frameworks_router)
 
 if __name__ == "__main__":
     import uvicorn
