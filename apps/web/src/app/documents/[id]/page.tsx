@@ -160,6 +160,34 @@ export default function DocumentDetailPage() {
     (o) => (o.role === "owner" || o.role === "approver") && o.email.trim().toLowerCase() === sessionEmail
   );
 
+// Build the would-be recipients list so we can show a preview and disable send if empty
+const computedRecipients = useMemo(() => {
+  // gather candidates by target
+  let base: string[] = [];
+  const approverEmails = owners.filter(o => o.role === "approver").map(o => o.email.toLowerCase());
+  const ownerEmails    = owners.filter(o => o.role === "owner").map(o => o.email.toLowerCase());
+
+  if (target === "approvers") {
+    base = approverEmails.length > 0 ? approverEmails : ownerEmails; // fallback when no approvers
+  } else if (target === "owners") {
+    base = ownerEmails;
+  } else {
+    // both
+    base = Array.from(new Set([...approverEmails, ...ownerEmails]));
+  }
+
+  // merge explicit reviewers (chips)
+  const explicit = selectedReviewers.map(e => e.toLowerCase());
+
+  // de-dup, remove requester, trim empties
+  const dedup = Array.from(new Set([...base, ...explicit]))
+    .filter(e => !!e && e !== sessionEmail); // <-- use the already-declared sessionEmail
+
+  return dedup;
+}, [owners, target, selectedReviewers, sessionEmail]);
+
+
+
   const latestVersion = useMemo(() => doc?.latest_version ?? null, [doc]);
 
   // load doc + latest

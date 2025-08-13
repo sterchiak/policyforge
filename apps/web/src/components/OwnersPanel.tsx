@@ -72,19 +72,21 @@ export default function OwnersPanel({ docId }: { docId: number }) {
     }
   }
 
-  async function removeOwner(o: DocOwner) {
-    setLoading(true);
-    setErr(null);
-    try {
-      await api.delete(`/v1/documents/${docId}/owners/${o.user_id}`);
-      await load();
-    } catch (e: any) {
-      const msg = e?.response?.data?.detail || e?.message || "Failed to remove owner";
-      setErr(String(msg));
-    } finally {
-      setLoading(false);
-    }
-  }
+    async function removeOwner(o: DocOwner) {
+        setLoading(true);
+        setErr(null);
+        try {
+            // FIX: use mapping id (o.id), not user_id
+            await api.delete(`/v1/documents/${docId}/owners/${o.id}`);
+            await load();
+        } catch (e: any) {
+            const msg = e?.response?.data?.detail || e?.message || "Failed to remove owner";
+            setErr(String(msg));
+        } finally {
+            setLoading(false);
+        }
+        }
+
 
   const youBadgeFor = useMemo(() => {
     // if you store current user email in session on client, you can mark "You"
