@@ -79,11 +79,13 @@ class CommentOut(BaseModel):
 
 # Approvals I/O
 class ApprovalIn(BaseModel):
-    # Optional; if omitted, we auto-target by role(s) below
+    # NEW: multiple explicit reviewers (emails). If present, we use these.
+    reviewers: Optional[List[EmailStr]] = None
+    # Legacy single reviewer (kept for compatibility)
     reviewer: Optional[str] = None
     version: Optional[int] = None
     note: Optional[str] = None
-    # who to auto-target when reviewer is omitted
+    # Who to target when no reviewers provided
     target: Literal["approvers", "owners", "both"] = "approvers"
 
 
@@ -329,7 +331,6 @@ def approvals_mine(
     db: Session = Depends(get_db),
     user: UserPrincipal = Depends(get_current_user),
 ):
-    # Accept either email or name match because reviewer is a free-text field today
     email = (getattr(user, "email", "") or "").strip().lower()
     name = (getattr(user, "name", "") or "").strip().lower()
     if not email and not name:
@@ -834,17 +835,24 @@ def create_approval(
     actor_email = (getattr(user, "email", "") or "").strip().lower()
     ver_label = payload.version if payload.version is not None else _latest_version(db, doc_id)
 
-    recipients: list[str] = []
+    # 1) explicit reviewers (multi & single)
+    recipients_set: set[str] = set()
+    if payload.reviewers:
+        recipients_set.update([e.strip().lower() for e in payload.reviewers if e])
     if payload.reviewer:
-        recipients = [(payload.reviewer or "").strip().lower()]
+        recipients_set.add((payload.reviewer or "").strip().lower())
+
+    if recipients_set:
+        recipients = sorted(recipients_set)
     else:
-        # auto-target by role
+        # 2) auto-target by role
         want_roles: list[str] = []
         if payload.target in ("approvers", "both"):
             want_roles.append("approver")
         if payload.target in ("owners", "both"):
             want_roles.append("owner")
 
+        recipients: list[str] = []
         if want_roles:
             rows = (
                 db.query(PolicyUser.email)
@@ -857,7 +865,7 @@ def create_approval(
             )
             recipients = [r[0].strip().lower() for r in rows]
 
-        # Fallback: if asking for approvers & there are none, fall back to owners
+        # Fallback when target=approvers and none exist
         if not recipients and payload.target == "approvers":
             rows = (
                 db.query(PolicyUser.email)
@@ -870,15 +878,12 @@ def create_approval(
             )
             recipients = [r[0].strip().lower() for r in rows]
 
-    # De-dup + normalize
-    dedup = sorted({(r or "").strip().lower() for r in recipients if r})
-    # Prefer others; if none, allow self so single-user flows work
-    others = [r for r in dedup if r != actor_email]
-    recipients = others if others else dedup
+    # De-dup & avoid assigning requester
+    recipients = sorted({r for r in recipients if r and r != actor_email})
     if not recipients:
         raise HTTPException(status_code=400, detail="No matching recipients (assign owners/approvers first)")
 
-    created: list[PolicyApproval] = []
+    created: List[PolicyApproval] = []
     for rcv in recipients:
         a = PolicyApproval(
             document_id=doc_id,
@@ -888,7 +893,7 @@ def create_approval(
             note=(payload.note or "").strip() or None,
         )
         db.add(a)
-        db.flush()  # get a.id for notifications
+        db.flush()  # get a.id
         created.append(a)
 
         _notify_user(
@@ -901,19 +906,17 @@ def create_approval(
             approval_id=a.id,
         )
 
-    # Let the requester know (FYI) unless they are a reviewer already (avoid duplicate)
-    if actor_email and actor_email not in recipients:
-        _notify_user(
-            db,
-            target_email=actor_email,
-            ntype="approval_requested",
-            message=f"You requested approval for '{d.title}' v{ver_label}",
-            document_id=doc_id,
-            version=payload.version,
-            approval_id=created[0].id,
-        )
-    # Notify other owners/approvers (excluding anyone already a reviewer)
-    for em in set(_owner_emails(db, doc_id)) - set(recipients) - ({actor_email} if actor_email else set()):
+    # FYIs
+    _notify_user(
+        db,
+        target_email=actor_email,
+        ntype="approval_requested",
+        message=f"You requested approval for '{d.title}' v{ver_label}",
+        document_id=doc_id,
+        version=payload.version,
+        approval_id=created[0].id,
+    )
+    for em in set(_owner_emails(db, doc_id)) - set(recipients) - {actor_email}:
         _notify_user(
             db,
             target_email=em,
@@ -924,7 +927,6 @@ def create_approval(
             approval_id=created[0].id,
         )
 
-    # Optionally mark doc "in_review"
     d.status = "in_review"
     d.updated_at = datetime.utcnow()
     db.commit()
@@ -1099,7 +1101,7 @@ def approvals_summary_all(scope: str = "any", db: Session = Depends(get_db)):
             .filter(
                 or_(
                     PolicyApproval.version == latest_subq.c.latest_version,
-                    PolicyApproval.version.is_(None),  # count global approvals too
+                    PolicyApproval.version.is_(None),
                 )
             )
         )

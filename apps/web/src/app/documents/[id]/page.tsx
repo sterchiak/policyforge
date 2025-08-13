@@ -1,3 +1,4 @@
+// apps/web/src/app/documents/[id]/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -9,6 +10,7 @@ import Card from "@/components/Card";
 import { api } from "@/lib/api";
 import { diffWords } from "diff";
 import OwnersPanel from "@/components/OwnersPanel";
+import ReviewerPicker from "@/components/ReviewerPicker";
 
 type VersionRow = { id: number; version: number; created_at: string };
 type DocumentDetail = {
@@ -74,7 +76,6 @@ function getFilenameFromDisposition(disposition?: string, fallback = "policy.htm
 
 const STATUS_OPTS = ["draft", "in_review", "approved", "published", "rejected"] as const;
 
-// --- helpers for diff ---
 const stripHtml = (html: string) => html.replace(/<[^>]+>/g, " ");
 const escapeHtml = (s: string) =>
   s.replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]!));
@@ -92,9 +93,10 @@ function renderContentDiff(aHtml: string, bHtml: string) {
   return html;
 }
 
+type DraftParamsKey = keyof DraftParams;
 function diffParams(a: DraftParams, b: DraftParams) {
   const toStr = (v: any) => (Array.isArray(v) ? v.join(", ") : String(v));
-  const keys: (keyof DraftParams)[] = [
+  const keys: DraftParamsKey[] = [
     "template_key",
     "org_name",
     "password_min_length",
@@ -122,32 +124,28 @@ export default function DocumentDetailPage() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // editable meta
   const [title, setTitle] = useState("");
   const [status, setStatus] = useState<(typeof STATUS_OPTS)[number]>("draft");
 
-  // compare state
   const [compareA, setCompareA] = useState<number | "">("");
   const [compareB, setCompareB] = useState<number | "">("");
   const [paramChanges, setParamChanges] = useState<Array<{ key: string; before: string; after: string }>>([]);
   const [contentDiffHtml, setContentDiffHtml] = useState<string | null>(null);
 
-  // comments state
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState("");
   const [commentAuthor, setCommentAuthor] = useState("You");
   const [commentOnlyCurrent, setCommentOnlyCurrent] = useState(true);
 
-  // approvals state
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [onlyCurrentApprovals, setOnlyCurrentApprovals] = useState(true);
 
-  // new: auto-target settings + optional extra reviewer
+  // NEW: auto-target settings + multi-select explicit reviewers
   const [target, setTarget] = useState<"approvers" | "owners" | "both">("approvers");
-  const [newReviewer, setNewReviewer] = useState(""); // optional additional email
+  const [selectedReviewers, setSelectedReviewers] = useState<string[]>([]);
   const [newApprovalNote, setNewApprovalNote] = useState("");
 
-  // --- doc-level owners for gating approve/reject ---
+  // owners for permission gating
   const [owners, setOwners] = useState<DocOwner[]>([]);
   useEffect(() => {
     if (!docId) return;
@@ -164,7 +162,7 @@ export default function DocumentDetailPage() {
 
   const latestVersion = useMemo(() => doc?.latest_version ?? null, [doc]);
 
-  // load document + latest version
+  // load doc + latest
   useEffect(() => {
     if (!docId) return;
     api
@@ -180,7 +178,7 @@ export default function DocumentDetailPage() {
       .catch((e) => setErr(e.message));
   }, [docId]);
 
-  // load comments
+  // comments
   useEffect(() => {
     if (!docId) return;
     const query =
@@ -193,7 +191,7 @@ export default function DocumentDetailPage() {
       .catch(() => setComments([]));
   }, [docId, current?.version, commentOnlyCurrent]);
 
-  // load approvals
+  // approvals
   useEffect(() => {
     if (!docId) return;
     const query =
@@ -406,12 +404,12 @@ export default function DocumentDetailPage() {
         version: onlyCurrentApprovals ? current?.version ?? null : null,
         note: newApprovalNote || undefined,
       };
-      if (newReviewer.trim()) payload.reviewer = newReviewer.trim(); // optional extra reviewer
+      if (selectedReviewers.length > 0) payload.reviewers = selectedReviewers;
       await api.post<Approval>(`/v1/documents/${docId}/approvals`, payload);
-      setNewReviewer("");
+      setSelectedReviewers([]);
       setNewApprovalNote("");
       await refreshApprovals();
-      setStatus("in_review"); // reflect immediately
+      setStatus("in_review");
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e.message);
     } finally {
@@ -428,11 +426,9 @@ export default function DocumentDetailPage() {
       await api.patch<Approval>(`/v1/documents/${docId}/approvals/${approvalId}`, { status, note });
       await refreshApprovals();
 
-      // optimistic UI
       if (status === "approved") setStatus("approved");
       if (status === "rejected") setStatus("rejected");
 
-      // authoritative refresh of doc meta/status
       const meta = await api.get<DocumentDetail>(`/v1/documents/${docId}`);
       setDoc(meta.data);
       setStatus(meta.data.status as any);
@@ -608,7 +604,6 @@ export default function DocumentDetailPage() {
                     Only for current version {current ? `(v${current.version})` : ""}
                   </label>
 
-                  {/* auto-target options */}
                   <div className="mb-2 grid gap-2 text-sm">
                     <label className="flex items-center gap-2">
                       <input
@@ -639,14 +634,16 @@ export default function DocumentDetailPage() {
                     </label>
                   </div>
 
-                  {/* optional extra email */}
-                  <input
-                    className="mb-2 w-full rounded border px-2 py-1 text-sm"
-                    placeholder="Optional: additional reviewer email"
-                    value={newReviewer}
-                    onChange={(e) => setNewReviewer(e.target.value)}
-                    disabled={!isAuthed || !canRequestApproval}
-                  />
+                  {/* explicit reviewers from team (optional) */}
+                  <div className="mb-2">
+                    <div className="mb-1 text-xs text-gray-600">Add specific reviewers (optional)</div>
+                    <ReviewerPicker
+                      value={selectedReviewers}
+                      onChange={setSelectedReviewers}
+                      disabled={!isAuthed || !canRequestApproval}
+                    />
+                  </div>
+
                   <textarea
                     className="mb-2 h-20 w-full rounded border px-2 py-1 text-sm"
                     placeholder="Optional note"
