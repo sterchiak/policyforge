@@ -141,7 +141,10 @@ export default function DocumentDetailPage() {
   // approvals state
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [onlyCurrentApprovals, setOnlyCurrentApprovals] = useState(true);
-  const [newReviewer, setNewReviewer] = useState("");
+
+  // new: auto-target settings + optional extra reviewer
+  const [target, setTarget] = useState<"approvers" | "owners" | "both">("approvers");
+  const [newReviewer, setNewReviewer] = useState(""); // optional additional email
   const [newApprovalNote, setNewApprovalNote] = useState("");
 
   // --- doc-level owners for gating approve/reject ---
@@ -395,22 +398,20 @@ export default function DocumentDetailPage() {
   };
 
   const onCreateApproval = async () => {
-    if (!newReviewer.trim()) return;
     setErr(null);
     setLoading(true);
     try {
-      const payload = {
-        reviewer: newReviewer.trim(),
+      const payload: any = {
+        target, // "approvers" | "owners" | "both"
         version: onlyCurrentApprovals ? current?.version ?? null : null,
         note: newApprovalNote || undefined,
       };
+      if (newReviewer.trim()) payload.reviewer = newReviewer.trim(); // optional extra reviewer
       await api.post<Approval>(`/v1/documents/${docId}/approvals`, payload);
       setNewReviewer("");
       setNewApprovalNote("");
       await refreshApprovals();
-
-      // reflect doc state immediately
-      setStatus("in_review");
+      setStatus("in_review"); // reflect immediately
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e.message);
     } finally {
@@ -606,9 +607,42 @@ export default function DocumentDetailPage() {
                     />
                     Only for current version {current ? `(v${current.version})` : ""}
                   </label>
+
+                  {/* auto-target options */}
+                  <div className="mb-2 grid gap-2 text-sm">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        className="h-4 w-4"
+                        checked={target === "approvers"}
+                        onChange={() => setTarget("approvers")}
+                      />
+                      Send to document approvers (default)
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        className="h-4 w-4"
+                        checked={target === "owners"}
+                        onChange={() => setTarget("owners")}
+                      />
+                      Send to document owners
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        className="h-4 w-4"
+                        checked={target === "both"}
+                        onChange={() => setTarget("both")}
+                      />
+                      Send to both approvers and owners
+                    </label>
+                  </div>
+
+                  {/* optional extra email */}
                   <input
                     className="mb-2 w-full rounded border px-2 py-1 text-sm"
-                    placeholder="Reviewer (name or email)"
+                    placeholder="Optional: additional reviewer email"
                     value={newReviewer}
                     onChange={(e) => setNewReviewer(e.target.value)}
                     disabled={!isAuthed || !canRequestApproval}
@@ -622,7 +656,7 @@ export default function DocumentDetailPage() {
                   />
                   <button
                     onClick={onCreateApproval}
-                    disabled={!isAuthed || !canRequestApproval || !newReviewer.trim() || loading}
+                    disabled={!isAuthed || !canRequestApproval || loading}
                     className="w-full rounded border px-2 py-1 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Send Request

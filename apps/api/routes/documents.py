@@ -79,9 +79,12 @@ class CommentOut(BaseModel):
 
 # Approvals I/O
 class ApprovalIn(BaseModel):
-    reviewer: str
+    # Optional; if omitted, we auto-target by role(s) below
+    reviewer: Optional[str] = None
     version: Optional[int] = None
     note: Optional[str] = None
+    # who to auto-target when reviewer is omitted
+    target: Literal["approvers", "owners", "both"] = "approvers"
 
 
 class ApprovalOut(BaseModel):
@@ -220,8 +223,11 @@ def _notify_user(
 # =========================================================
 # Ownership coverage (STATIC ROUTE) — declared before /{doc_id} paths
 # =========================================================
-@router.get("/ownership_coverage", response_model=OwnershipCoverageOut,
-            dependencies=[Depends(require_roles("owner","admin","editor","viewer","approver"))])
+@router.get(
+    "/ownership_coverage",
+    response_model=OwnershipCoverageOut,
+    dependencies=[Depends(require_roles("owner", "admin", "editor", "viewer", "approver"))],
+)
 def ownership_coverage(limit: int = 5, db: Session = Depends(get_db)):
     """
     Returns documents that are missing owners and/or approvers assignments (per-doc),
@@ -312,21 +318,32 @@ class MyApprovalOut(BaseModel):
     decided_at: Optional[str]
 
 
-@router.get("/approvals/mine", response_model=List[MyApprovalOut],
-            dependencies=[Depends(require_roles("owner","admin","editor","viewer","approver"))])
+@router.get(
+    "/approvals/mine",
+    response_model=List[MyApprovalOut],
+    dependencies=[Depends(require_roles("owner", "admin", "editor", "viewer", "approver"))],
+)
 def approvals_mine(
     status: Literal["any", "pending", "approved", "rejected"] = "pending",
     limit: int = 5,
     db: Session = Depends(get_db),
     user: UserPrincipal = Depends(get_current_user),
 ):
-    if not user or not getattr(user, "email", None):
+    # Accept either email or name match because reviewer is a free-text field today
+    email = (getattr(user, "email", "") or "").strip().lower()
+    name = (getattr(user, "name", "") or "").strip().lower()
+    if not email and not name:
         return []
 
     q = (
         db.query(PolicyApproval, PolicyDocument.title)
         .join(PolicyDocument, PolicyDocument.id == PolicyApproval.document_id)
-        .filter(func.lower(PolicyApproval.reviewer) == func.lower(user.email))
+        .filter(
+            or_(
+                email != "" and func.lower(PolicyApproval.reviewer) == email,
+                name != "" and func.lower(PolicyApproval.reviewer) == name,
+            )
+        )
         .order_by(PolicyApproval.requested_at.desc())
     )
     if status != "any":
@@ -396,8 +413,11 @@ def create_document(
     return _doc_to_out(db, doc)
 
 
-@router.get("", response_model=List[DocumentOut],
-            dependencies=[Depends(require_roles("owner","admin","editor","viewer","approver"))])
+@router.get(
+    "",
+    response_model=List[DocumentOut],
+    dependencies=[Depends(require_roles("owner", "admin", "editor", "viewer", "approver"))],
+)
 def list_documents(limit: int = 50, db: Session = Depends(get_db)):
     docs = (
         db.query(PolicyDocument)
@@ -408,8 +428,11 @@ def list_documents(limit: int = 50, db: Session = Depends(get_db)):
     return [_doc_to_out(db, d) for d in docs]
 
 
-@router.get("/{doc_id}", response_model=DocumentDetailOut,
-            dependencies=[Depends(require_roles("owner","admin","editor","viewer","approver"))])
+@router.get(
+    "/{doc_id}",
+    response_model=DocumentDetailOut,
+    dependencies=[Depends(require_roles("owner", "admin", "editor", "viewer", "approver"))],
+)
 def get_document(doc_id: int, db: Session = Depends(get_db)):
     d = db.get(PolicyDocument, doc_id)
     if not d:
@@ -433,8 +456,11 @@ def get_document(doc_id: int, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/{doc_id}/versions", response_model=List[VersionOut],
-            dependencies=[Depends(require_roles("owner","admin","editor","viewer","approver"))])
+@router.get(
+    "/{doc_id}/versions",
+    response_model=List[VersionOut],
+    dependencies=[Depends(require_roles("owner", "admin", "editor", "viewer", "approver"))],
+)
 def list_versions(doc_id: int, db: Session = Depends(get_db)):
     vs = (
         db.query(PolicyVersion)
@@ -448,8 +474,11 @@ def list_versions(doc_id: int, db: Session = Depends(get_db)):
     ]
 
 
-@router.get("/{doc_id}/versions/latest", response_model=VersionDetailOut,
-            dependencies=[Depends(require_roles("owner","admin","editor","viewer","approver"))])
+@router.get(
+    "/{doc_id}/versions/latest",
+    response_model=VersionDetailOut,
+    dependencies=[Depends(require_roles("owner", "admin", "editor", "viewer", "approver"))],
+)
 def get_latest_version(doc_id: int, db: Session = Depends(get_db)):
     v = (
         db.query(PolicyVersion)
@@ -481,8 +510,11 @@ def get_latest_version(doc_id: int, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/{doc_id}/versions/{version}", response_model=VersionDetailOut,
-            dependencies=[Depends(require_roles("owner","admin","editor","viewer","approver"))])
+@router.get(
+    "/{doc_id}/versions/{version}",
+    response_model=VersionDetailOut,
+    dependencies=[Depends(require_roles("owner", "admin", "editor", "viewer", "approver"))],
+)
 def get_version(doc_id: int, version: int, db: Session = Depends(get_db)):
     v = (
         db.query(PolicyVersion)
@@ -673,8 +705,11 @@ def delete_version(
 # =========================================================
 # Comments
 # =========================================================
-@router.get("/{doc_id}/comments", response_model=List[CommentOut],
-            dependencies=[Depends(require_roles("owner","admin","editor","viewer","approver"))])
+@router.get(
+    "/{doc_id}/comments",
+    response_model=List[CommentOut],
+    dependencies=[Depends(require_roles("owner", "admin", "editor", "viewer", "approver"))],
+)
 def list_comments(doc_id: int, version: Optional[int] = None, db: Session = Depends(get_db)):
     q = db.query(PolicyComment).filter(PolicyComment.document_id == doc_id)
     if version is not None:
@@ -744,8 +779,11 @@ def create_comment(
 # =========================================================
 # Approvals
 # =========================================================
-@router.get("/{doc_id}/approvals", response_model=List[ApprovalOut],
-            dependencies=[Depends(require_roles("owner","admin","editor","viewer","approver"))])
+@router.get(
+    "/{doc_id}/approvals",
+    response_model=List[ApprovalOut],
+    dependencies=[Depends(require_roles("owner", "admin", "editor", "viewer", "approver"))],
+)
 def list_approvals(doc_id: int, version: Optional[int] = None, db: Session = Depends(get_db)):
     q = db.query(PolicyApproval).filter(PolicyApproval.document_id == doc_id)
     if version is not None:
@@ -792,41 +830,90 @@ def create_approval(
         if not exists_v:
             raise HTTPException(status_code=400, detail="Version not found")
 
-    a = PolicyApproval(
-        document_id=doc_id,
-        version=payload.version,
-        reviewer=payload.reviewer.strip(),
-        status="pending",
-        note=(payload.note or "").strip() or None,
-    )
-    db.add(a)
-
-    # In-app notifications (reviewer + requester + owners), committed with the approval
-    ver_label = payload.version if payload.version is not None else _latest_version(db, doc_id)
-    reviewer_email = (payload.reviewer or "").strip().lower()
+    # Build recipient list
     actor_email = (getattr(user, "email", "") or "").strip().lower()
+    ver_label = payload.version if payload.version is not None else _latest_version(db, doc_id)
 
-    _notify_user(
-        db,
-        target_email=reviewer_email,
-        ntype="approval_requested",
-        message=f"Approval requested for '{d.title}' v{ver_label}",
-        document_id=doc_id,
-        version=payload.version,
-        approval_id=a.id if a.id else None,
-    )
-    _notify_user(
-        db,
-        target_email=actor_email,
-        ntype="approval_requested",
-        message=f"You requested approval for '{d.title}' v{ver_label}",
-        document_id=doc_id,
-        version=payload.version,
-        approval_id=a.id if a.id else None,
-    )
+    recipients: list[str] = []
+    if payload.reviewer:
+        recipients = [(payload.reviewer or "").strip().lower()]
+    else:
+        # auto-target by role
+        want_roles: list[str] = []
+        if payload.target in ("approvers", "both"):
+            want_roles.append("approver")
+        if payload.target in ("owners", "both"):
+            want_roles.append("owner")
 
-    # Owners (owner/approver roles), de-duped
-    for em in set(_owner_emails(db, doc_id)) - {reviewer_email, actor_email}:
+        if want_roles:
+            rows = (
+                db.query(PolicyUser.email)
+                .join(PolicyDocumentOwner, PolicyDocumentOwner.user_id == PolicyUser.id)
+                .filter(
+                    PolicyDocumentOwner.document_id == doc_id,
+                    PolicyDocumentOwner.role.in_(want_roles),
+                )
+                .all()
+            )
+            recipients = [r[0].strip().lower() for r in rows]
+
+        # Fallback: if asking for approvers & there are none, fall back to owners
+        if not recipients and payload.target == "approvers":
+            rows = (
+                db.query(PolicyUser.email)
+                .join(PolicyDocumentOwner, PolicyDocumentOwner.user_id == PolicyUser.id)
+                .filter(
+                    PolicyDocumentOwner.document_id == doc_id,
+                    PolicyDocumentOwner.role == "owner",
+                )
+                .all()
+            )
+            recipients = [r[0].strip().lower() for r in rows]
+
+    # De-dup + normalize
+    dedup = sorted({(r or "").strip().lower() for r in recipients if r})
+    # Prefer others; if none, allow self so single-user flows work
+    others = [r for r in dedup if r != actor_email]
+    recipients = others if others else dedup
+    if not recipients:
+        raise HTTPException(status_code=400, detail="No matching recipients (assign owners/approvers first)")
+
+    created: list[PolicyApproval] = []
+    for rcv in recipients:
+        a = PolicyApproval(
+            document_id=doc_id,
+            version=payload.version,
+            reviewer=rcv,
+            status="pending",
+            note=(payload.note or "").strip() or None,
+        )
+        db.add(a)
+        db.flush()  # get a.id for notifications
+        created.append(a)
+
+        _notify_user(
+            db,
+            target_email=rcv,
+            ntype="approval_requested",
+            message=f"Approval requested for '{d.title}' v{ver_label}",
+            document_id=doc_id,
+            version=payload.version,
+            approval_id=a.id,
+        )
+
+    # Let the requester know (FYI) unless they are a reviewer already (avoid duplicate)
+    if actor_email and actor_email not in recipients:
+        _notify_user(
+            db,
+            target_email=actor_email,
+            ntype="approval_requested",
+            message=f"You requested approval for '{d.title}' v{ver_label}",
+            document_id=doc_id,
+            version=payload.version,
+            approval_id=created[0].id,
+        )
+    # Notify other owners/approvers (excluding anyone already a reviewer)
+    for em in set(_owner_emails(db, doc_id)) - set(recipients) - ({actor_email} if actor_email else set()):
         _notify_user(
             db,
             target_email=em,
@@ -834,20 +921,24 @@ def create_approval(
             message=f"Approval requested for '{d.title}' v{ver_label}",
             document_id=doc_id,
             version=payload.version,
-            approval_id=a.id if a.id else None,
+            approval_id=created[0].id,
         )
 
+    # Optionally mark doc "in_review"
+    d.status = "in_review"
+    d.updated_at = datetime.utcnow()
     db.commit()
-    db.refresh(a)
 
+    a0 = created[0]
+    db.refresh(a0)
     return ApprovalOut(
-        id=a.id,
-        document_id=a.document_id,
-        version=a.version,
-        reviewer=a.reviewer,
-        status=a.status,  # type: ignore
-        note=a.note,
-        requested_at=a.requested_at.isoformat(),
+        id=a0.id,
+        document_id=a0.document_id,
+        version=a0.version,
+        reviewer=a0.reviewer,
+        status=a0.status,  # type: ignore
+        note=a0.note,
+        requested_at=a0.requested_at.isoformat(),
         decided_at=None,
     )
 
