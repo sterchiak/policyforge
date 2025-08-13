@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "key": "cis_v8",
+    "name": "CIS Critical Security Controls v8",
+    "version": "8",
+    "description": "Prioritized safeguards to mitigate common cyber attacks.",
+    "tags": ["SMB", "Security", "Prioritized"]
+  },
+  "controls": [
+    {
+      "id": "1.1",
+      "title": "Enterprise Asset Inventory",
+      "description": "Maintain an accurate asset inventory.",
+      "family": "Inventory and Control of Enterprise Assets"
+    },
+    {
+      "id": "4.1",
+      "title": "Secure Configurations",
+      "description": "Harden and baseline configurations for enterprise assets.",
+      "family": "Secure Configuration of Enterprise Assets and Software"
+    },
+    {
+      "id": "5.3",
+      "title": "Anti‑Malware Scanning",
+      "description": "Enable scheduled and real‑time anti‑malware scans.",
+      "family": "Account Management"
+    },
+    {
+      "id": "6.7",
+      "title": "Centralize Audit Logs",
+      "description": "Collect and retain audit logs for analysis.",
+      "family": "Access Control Management"
+    },
+    {
+      "id": "16.13",
+      "title": "IR Exercises",
+      "description": "Exercise incident response plans and update processes.",
+      "family": "Incident Response Management"
+    }
+  ]
+}

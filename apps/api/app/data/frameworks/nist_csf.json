@@ -1,0 +1,46 @@
+{
+  "meta": {
+    "key": "nist_csf",
+    "name": "NIST Cybersecurity Framework (CSF)",
+    "version": "2.0",
+    "description": "Functions/Categories/Outcomes across Identify, Protect, Detect, Respond, Recover.",
+    "tags": ["SMB", "General", "Security"]
+  },
+  "controls": [
+    {
+      "id": "ID.AM-01",
+      "title": "Asset Inventory",
+      "description": "Maintain an up-to-date asset inventory.",
+      "family": "Identify",
+      "category": "Asset Management"
+    },
+    {
+      "id": "PR.AC-01",
+      "title": "Access Control Policy",
+      "description": "Establish and maintain access control policy.",
+      "family": "Protect",
+      "category": "Access Control"
+    },
+    {
+      "id": "DE.DP-01",
+      "title": "Security Monitoring",
+      "description": "Monitor systems to detect cybersecurity events.",
+      "family": "Detect",
+      "category": "Detection Processes"
+    },
+    {
+      "id": "RS.MA-01",
+      "title": "Incident Response Plan",
+      "description": "Maintain an incident response plan.",
+      "family": "Respond",
+      "category": "Mitigation"
+    },
+    {
+      "id": "RC.IM-01",
+      "title": "Improvements",
+      "description": "Incorporate lessons learned into response activities.",
+      "family": "Recover",
+      "category": "Improvements"
+    }
+  ]
+}
