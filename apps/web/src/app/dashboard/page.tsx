@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   AlertTriangle,
 } from "lucide-react";
+import { useSession } from "next-auth/react";
 
 // DnD Kit
 import {
@@ -93,6 +94,12 @@ const WIDGET_IDS = [
 type WidgetId = (typeof WIDGET_IDS)[number];
 
 export default function DashboardPage() {
+  const { data: session } = useSession();
+  const userKey =
+    (session?.user as any)?.email?.toLowerCase?.() ||
+    (session?.user as any)?.name?.toLowerCase?.() ||
+    "anon";
+
   const [health, setHealth] =
     useState<"ok" | "error" | "checking...">("checking...");
   const [templateCount, setTemplateCount] = useState<number>(0);
@@ -230,28 +237,33 @@ export default function DashboardPage() {
   };
 
   // ---- Drag + drop ordering ----
-  const STORAGE_KEY = "pf.dashboard.layout.v1";
   const [order, setOrder] = useState<WidgetId[]>(WIDGET_IDS as WidgetId[]);
 
-  // Load persisted order
+  // Load persisted order (per user)
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(`pf.dashboard.layout.v1:${userKey}`);
       if (!raw) return;
       const parsed: string[] = JSON.parse(raw);
-      const valid = parsed.filter((x) => (WIDGET_IDS as readonly string[]).includes(x));
-      // Keep unknowns out; append any new widgets that aren’t saved yet
-      const missing = (WIDGET_IDS as readonly string[]).filter((id) => !valid.includes(id));
+      const valid = parsed.filter((x) =>
+        (WIDGET_IDS as readonly string[]).includes(x)
+      );
+      const missing = (WIDGET_IDS as readonly string[]).filter(
+        (id) => !valid.includes(id)
+      );
       setOrder([...(valid as WidgetId[]), ...(missing as WidgetId[])]);
     } catch {
       // ignore
     }
-  }, []);
+  }, [userKey]);
 
   // Save order
   const persist = (next: WidgetId[]) => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      localStorage.setItem(
+        `pf.dashboard.layout.v1:${userKey}`,
+        JSON.stringify(next)
+      );
     } catch {
       // ignore
     }
@@ -395,14 +407,16 @@ export default function DashboardPage() {
               </ul>
             )}
             <div className="mt-3 text-right">
-              <span className="text-xs text-gray-500">Open the bell to view all</span>
+              <span className="text-xs text-gray-500">
+                Open the bell to view all
+              </span>
             </div>
           </Card>
         );
 
       case "team":
-        const teamTotal = users.length;
-        const byRole = users.reduce<Record<UserOut["role"], number>>(
+        const teamTotalInner = users.length;
+        const byRoleInner = users.reduce<Record<UserOut["role"], number>>(
           (acc, u) => {
             acc[u.role] = (acc[u.role] || 0) + 1;
             return acc;
@@ -417,24 +431,24 @@ export default function DashboardPage() {
                 <span>Total</span>
               </div>
               <span className="text-xl font-semibold text-gray-900">
-                {teamTotal}
+                {teamTotalInner}
               </span>
             </div>
             <div className="grid grid-cols-2 gap-2 text-sm">
               <div className="rounded border bg-white p-2">
-                Owners: <b>{byRole.owner || 0}</b>
+                Owners: <b>{byRoleInner.owner || 0}</b>
               </div>
               <div className="rounded border bg-white p-2">
-                Approvers: <b>{byRole.approver || 0}</b>
+                Approvers: <b>{byRoleInner.approver || 0}</b>
               </div>
               <div className="rounded border bg-white p-2">
-                Editors: <b>{byRole.editor || 0}</b>
+                Editors: <b>{byRoleInner.editor || 0}</b>
               </div>
               <div className="rounded border bg-white p-2">
-                Viewers: <b>{byRole.viewer || 0}</b>
+                Viewers: <b>{byRoleInner.viewer || 0}</b>
               </div>
               <div className="col-span-2 rounded border bg-white p-2">
-                Admins: <b>{byRole.admin || 0}</b>
+                Admins: <b>{byRoleInner.admin || 0}</b>
               </div>
             </div>
             <div className="mt-3 text-right">
@@ -751,10 +765,6 @@ export default function DashboardPage() {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Policy Hub</h1>
-          <p className="text-sm text-gray-700">
-            Local-first policy management with versioning, comments, and
-            approvals.
-          </p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -777,7 +787,7 @@ export default function DashboardPage() {
             onClick={() => {
               setOrder(WIDGET_IDS as WidgetId[]);
               try {
-                localStorage.removeItem(STORAGE_KEY);
+                localStorage.removeItem(`pf.dashboard.layout.v1:${userKey}`);
               } catch {}
             }}
             className="ml-2 inline-flex items-center rounded-xl border px-3 py-2 text-xs text-gray-900 hover:bg-gray-100"
