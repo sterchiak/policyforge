@@ -1,3 +1,4 @@
+# apps/api/app/models.py
 from __future__ import annotations
 
 from datetime import datetime
@@ -87,7 +88,7 @@ class PolicyComment(Base):
     document = relationship("PolicyDocument", back_populates="comments")
 
 
-# --- NEW: Approvals ---
+# --- Approvals ---
 class PolicyApproval(Base):
     __tablename__ = "policy_approvals"
 
@@ -106,6 +107,7 @@ class PolicyApproval(Base):
     decided_at = Column(DateTime, nullable=True)
 
     document = relationship("PolicyDocument", back_populates="approvals")
+
 
 class PolicyNotification(Base):
     __tablename__ = "policy_notifications"
@@ -128,6 +130,7 @@ class PolicyNotification(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     read_at = Column(DateTime, nullable=True)
 
+
 class PolicyUser(Base):
     __tablename__ = "policy_users"
     id = Column(Integer, primary_key=True)
@@ -139,6 +142,7 @@ class PolicyUser(Base):
     role = Column(String(50), nullable=False, default="viewer")  # owner|admin|editor|viewer|approver
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+
 class PolicyDocumentOwner(Base):
     __tablename__ = "policy_document_owners"
     id = Column(Integer, primary_key=True)
@@ -149,3 +153,54 @@ class PolicyDocumentOwner(Base):
     __table_args__ = (UniqueConstraint("document_id", "user_id", name="uq_doc_user"),)
 
     user = relationship("PolicyUser")
+
+
+# ==============================
+# Framework Assessments (NEW)
+# ==============================
+
+class OrgControlAssessment(Base):
+    """
+    One row per org + framework key + control id.
+    Stores the team's stance and metadata for that control.
+    """
+    __tablename__ = "org_control_assessments"
+
+    id = Column(Integer, primary_key=True)
+    org_id = Column(Integer, index=True, nullable=True)  # optional until org scoping is enforced
+    framework_key = Column(String(100), index=True, nullable=False)
+    control_id = Column(String(100), index=True, nullable=False)
+
+    # not_applicable | planned | in_progress | implemented
+    status = Column(String(30), nullable=True)
+    owner_user_id = Column(Integer, ForeignKey("policy_users.id", ondelete="SET NULL"), nullable=True, index=True)
+    notes = Column(Text, nullable=True)
+    evidence_links = Column(Text, nullable=True)  # JSON array (stringified)
+    last_reviewed_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    owner = relationship("PolicyUser", foreign_keys=[owner_user_id])
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "framework_key", "control_id", name="uq_org_fw_ctrl"),
+    )
+
+
+class OrgControlLink(Base):
+    """
+    Optional link of a control to policy documents (and specific version).
+    """
+    __tablename__ = "org_control_links"
+
+    id = Column(Integer, primary_key=True)
+    org_id = Column(Integer, index=True, nullable=True)
+    framework_key = Column(String(100), index=True, nullable=False)
+    control_id = Column(String(100), index=True, nullable=False)
+    document_id = Column(Integer, ForeignKey("policy_documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    version = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "framework_key", "control_id", "document_id", "version", name="uq_org_fw_ctrl_docver"),
+    )
