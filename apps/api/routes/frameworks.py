@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional, Literal, Dict, Any
 
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
 
 from apps.api.app.db import get_db
 from apps.api.app.models import (
@@ -22,8 +22,9 @@ from apps.api.app.auth import get_current_user, UserPrincipal
 
 router = APIRouter(prefix="/v1/frameworks", tags=["frameworks"])
 
-# ===== Data (seed) =====
-# CIS Critical Security Controls v8 — top-level 18 controls (official names)
+# ===== Seeded Frameworks (local-first, no external deps) =====================
+
+# CIS v8: 18 top-level controls (kept simple)
 CIS_V8_CONTROLS = [
     {"id": "CIS-01", "title": "Inventory and Control of Enterprise Assets"},
     {"id": "CIS-02", "title": "Inventory and Control of Software Assets"},
@@ -45,7 +46,7 @@ CIS_V8_CONTROLS = [
     {"id": "CIS-18", "title": "Penetration Testing"},
 ]
 
-# NIST CSF v1.1 — Categories with official IDs (Functions: ID, PR, DE, RS, RC)
+# NIST CSF v1.1 (Categories; kept for backward-compat with your earlier views)
 NIST_CSF_CATEGORIES = [
     # Identify
     {"id": "ID.AM", "title": "Asset Management", "function": "ID"},
@@ -77,7 +78,97 @@ NIST_CSF_CATEGORIES = [
     {"id": "RC.CO", "title": "Communications", "function": "RC"},
 ]
 
-FRAMEWORKS = {
+# --- NIST CSF 2.0 loader -----------------------------------------------------
+# We support a local JSON file to keep everything offline.
+# Path: apps/api/app/data/csf_2_0_core.json
+# Expected structure (simple, local-friendly):
+# {
+#   "key": "nist_csf_2_0",
+#   "name": "NIST Cybersecurity Framework (v2.0)",
+#   "publisher": "NIST",
+#   "categories": [
+#     {
+#       "id": "GV.RR",
+#       "title": "Risk Management Strategy (example)",
+#       "function": "GV",
+#       "subcategories": [
+#         {"id": "GV.RR-01", "title": "Subcat title", "description": "…"},
+#         ...
+#       ]
+#     },
+#     ...
+#   ]
+# }
+def _load_csf_2_0() -> Dict[str, Any]:
+    root = Path(__file__).resolve().parents[2] / "app" / "data"
+    path = root / "csf_2_0_core.json"
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            # basic normalization: also produce a flattened `controls` from subcategories
+            categories = data.get("categories", [])
+            controls: List[Dict[str, Any]] = []
+            for cat in categories:
+                fn = cat.get("function")
+                for sub in (cat.get("subcategories") or []):
+                    controls.append({
+                        "id": sub["id"],
+                        "title": sub.get("title") or sub["id"],
+                        "function": fn,
+                        "category": cat.get("id"),
+                        "description": sub.get("description"),
+                    })
+            return {
+                "key": data.get("key", "nist_csf_2_0"),
+                "name": data.get("name", "NIST Cybersecurity Framework (v2.0)"),
+                "publisher": data.get("publisher", "NIST"),
+                "categories": categories,
+                "controls": controls,
+            }
+        except Exception:
+            pass
+
+    # Fallback: minimal example so the UI works if file not present
+    sample_categories = [
+        {
+            "id": "GV.RR",
+            "title": "Risk Management Strategy",
+            "function": "GV",
+            "subcategories": [
+                {"id": "GV.RR-01", "title": "Risk management strategy is established and communicated"},
+                {"id": "GV.RR-02", "title": "Risk appetite and tolerance are defined"},
+            ],
+        },
+        {
+            "id": "PR.AA",
+            "title": "Identity Management, Authentication, and Access Control",
+            "function": "PR",
+            "subcategories": [
+                {"id": "PR.AA-01", "title": "Identities are issued, managed, verified, revoked"},
+                {"id": "PR.AA-02", "title": "Strong authentication is used"},
+            ],
+        },
+    ]
+    flat_controls = []
+    for cat in sample_categories:
+        for sub in cat["subcategories"]:
+            flat_controls.append({
+                "id": sub["id"],
+                "title": sub["title"],
+                "function": cat["function"],
+                "category": cat["id"],
+            })
+    return {
+        "key": "nist_csf_2_0",
+        "name": "NIST Cybersecurity Framework (v2.0)",
+        "publisher": "NIST",
+        "categories": sample_categories,
+        "controls": flat_controls,
+    }
+
+
+# Registry: keep v1.1 and CIS v8; add CSF 2.0 via loader
+FRAMEWORKS: Dict[str, Dict[str, Any]] = {
     "cis_v8": {
         "key": "cis_v8",
         "name": "CIS Critical Security Controls v8",
@@ -90,14 +181,16 @@ FRAMEWORKS = {
         "publisher": "NIST",
         "controls": NIST_CSF_CATEGORIES,
     },
+    "nist_csf_2_0": _load_csf_2_0(),
 }
 
-# ===== Schemas =====
+# ===== Pydantic Schemas =======================================================
+
 class FrameworkMeta(BaseModel):
     key: str
     name: str
     publisher: str
-    count: int
+    count: int  # number of "controls" exposed (for v2.0 it's Subcategories)
 
 
 class Control(BaseModel):
@@ -113,7 +206,7 @@ class FrameworkDetail(BaseModel):
     controls: List[Control]
 
 
-# ---- Assessments ----
+# Assessments
 AssessmentStatus = Literal["not_applicable", "planned", "in_progress", "implemented"]
 ALLOWED_STATUSES = {"not_applicable", "planned", "in_progress", "implemented"}
 
@@ -144,7 +237,24 @@ class ControlWithAssessment(BaseModel):
     linked_docs: Optional[List[Dict[str, Any]]] = None
 
 
-# ===== Helpers =====
+# Category view (new for CSF 2.0)
+class CategorySummary(BaseModel):
+    id: str
+    title: str
+    function: Optional[str] = None
+    sub_count: int
+    implemented_count: int
+
+
+class CategoryDetail(BaseModel):
+    id: str
+    title: str
+    function: Optional[str] = None
+    controls: List[ControlWithAssessment]
+
+
+# ===== Helpers ================================================================
+
 def _framework_or_404(key: str) -> Dict[str, Any]:
     fw = FRAMEWORKS.get(key)
     if not fw:
@@ -160,7 +270,6 @@ def _load_links(db: Session, org_id: Optional[int], framework_key: str, control_
     if org_id is not None:
         q = q.filter(OrgControlLink.org_id == org_id)
     rows = q.all()
-    # Minimal projection to keep payload light
     return [{"document_id": r.document_id, "version": r.version} for r in rows]
 
 
@@ -211,14 +320,18 @@ def _get_or_create_assessment(
     return row
 
 
-# ===== Routes: Catalog =====
+# ===== Routes: Catalog ========================================================
+
 @router.get("", response_model=List[FrameworkMeta])
 def list_frameworks():
     out: List[FrameworkMeta] = []
     for fw in FRAMEWORKS.values():
         out.append(
             FrameworkMeta(
-                key=fw["key"], name=fw["name"], publisher=fw["publisher"], count=len(fw["controls"])
+                key=fw["key"],
+                name=fw["name"],
+                publisher=fw["publisher"],
+                count=len(fw["controls"]),
             )
         )
     return out
@@ -228,29 +341,28 @@ def list_frameworks():
 def get_framework(key: str, q: Optional[str] = None, function: Optional[str] = None):
     fw = _framework_or_404(key)
     controls = fw["controls"]
-    # Optional filtering
     if function:
         controls = [c for c in controls if (c.get("function") or "").lower() == function.lower()]
     if q:
         qs = q.strip().lower()
-        controls = [c for c in controls if qs in c["id"].lower() or qs in c["title"].lower()]
+        controls = [c for c in controls if qs in c["id"].lower() or qs in (c["title"] or "").lower()]
 
     return FrameworkDetail(
         key=fw["key"],
         name=fw["name"],
         publisher=fw["publisher"],
-        controls=[Control(**c) for c in controls],
+        controls=[Control(id=c["id"], title=c["title"], function=c.get("function")) for c in controls],
     )
 
 
 @router.get("/{key}/export/csv")
 def export_framework_csv(key: str):
     fw = _framework_or_404(key)
-    # very small CSV for now: id,title[,function]
     header = "id,title,function\n"
     rows = []
     for c in fw["controls"]:
-        rows.append(f'{c["id"]},"{c["title"].replace("\"","\"\"")}",{c.get("function","")}')
+        title = (c.get("title") or "").replace('"', '""')
+        rows.append(f'{c["id"]},"{title}",{c.get("function","")}')
     csv = header + "\n".join(rows)
     filename = f"{key}_controls.csv"
     return Response(
@@ -260,7 +372,152 @@ def export_framework_csv(key: str):
     )
 
 
-# ===== Routes: Assessments (NEW) =====
+# ===== Routes: Categories (for CSF 2.0 drawer) ===============================
+
+@router.get("/{key}/categories", response_model=List[CategorySummary])
+def list_categories(
+    key: str,
+    db: Session = Depends(get_db),
+    user: UserPrincipal = Depends(get_current_user),
+):
+    fw = _framework_or_404(key)
+    org_id = getattr(user, "orgId", None)
+
+    # If categories are present (CSF 2.0 path), use them; else infer from control "category" field
+    categories = fw.get("categories")
+    if not categories:
+        # Infer from controls if they carry "category"; else nothing
+        mapping: Dict[str, Dict[str, Any]] = {}
+        for c in fw["controls"]:
+            cat = c.get("category")
+            if not cat:
+                continue
+            if cat not in mapping:
+                mapping[cat] = {"id": cat, "title": cat, "function": c.get("function")}
+        categories = list(mapping.values())
+
+    # Preload assessments for counts
+    q = db.query(OrgControlAssessment).filter(OrgControlAssessment.framework_key == key)
+    if org_id is not None:
+        q = q.filter(OrgControlAssessment.org_id == org_id)
+    else:
+        q = q.filter(OrgControlAssessment.org_id.is_(None))
+    ass_by_ctrl = {a.control_id: a for a in q.all()}
+
+    # Build summaries
+    summaries: List[CategorySummary] = []
+    for cat in categories:
+        sub_ids: List[str] = []
+        if fw.get("categories"):  # csf 2.0 path
+            for sub in (cat.get("subcategories") or []):
+                sub_ids.append(sub["id"])
+        else:
+            # infer from controls array
+            for c in fw["controls"]:
+                if c.get("category") == cat["id"]:
+                    sub_ids.append(c["id"])
+
+        implemented = 0
+        for cid in sub_ids:
+            a = ass_by_ctrl.get(cid)
+            if a and a.status == "implemented":
+                implemented += 1
+
+        summaries.append(
+            CategorySummary(
+                id=cat["id"],
+                title=cat.get("title") or cat["id"],
+                function=cat.get("function"),
+                sub_count=len(sub_ids),
+                implemented_count=implemented,
+            )
+        )
+
+    # Sort by function then code
+    summaries.sort(key=lambda x: (x.function or "", x.id))
+    return summaries
+
+
+@router.get("/{key}/categories/{category_id}", response_model=CategoryDetail)
+def get_category_controls(
+    key: str,
+    category_id: str,
+    db: Session = Depends(get_db),
+    user: UserPrincipal = Depends(get_current_user),
+):
+    fw = _framework_or_404(key)
+    org_id = getattr(user, "orgId", None)
+
+    # Find category (2.0 path) or infer
+    cat_title = category_id
+    func = None
+    subcontrols: List[Dict[str, Any]] = []
+
+    if fw.get("categories"):
+        for cat in fw["categories"]:
+            if cat["id"] == category_id:
+                cat_title = cat.get("title") or category_id
+                func = cat.get("function")
+                for sub in (cat.get("subcategories") or []):
+                    subcontrols.append({
+                        "id": sub["id"],
+                        "title": sub.get("title") or sub["id"],
+                        "function": func,
+                    })
+                break
+    else:
+        # infer from `controls`
+        for c in fw["controls"]:
+            if c.get("category") == category_id:
+                func = func or c.get("function")
+                subcontrols.append({
+                    "id": c["id"],
+                    "title": c.get("title") or c["id"],
+                    "function": c.get("function"),
+                })
+
+    if not subcontrols:
+        raise HTTPException(status_code=404, detail="Category not found or empty")
+
+    # Preload assessments and owners
+    q = db.query(OrgControlAssessment).filter(
+        OrgControlAssessment.framework_key == key
+    )
+    if org_id is not None:
+        q = q.filter(OrgControlAssessment.org_id == org_id)
+    else:
+        q = q.filter(OrgControlAssessment.org_id.is_(None))
+    ass_by_ctrl = {a.control_id: a for a in q.all()}
+
+    owner_ids = {a.owner_user_id for a in ass_by_ctrl.values() if a and a.owner_user_id}
+    owners: Dict[int, PolicyUser] = {}
+    if owner_ids:
+        for u in db.query(PolicyUser).filter(PolicyUser.id.in_(owner_ids)).all():
+            owners[u.id] = u  # type: ignore
+
+    out_controls: List[ControlWithAssessment] = []
+    for sc in subcontrols:
+        a = ass_by_ctrl.get(sc["id"])
+        owner = owners.get(a.owner_user_id) if a and a.owner_user_id else None
+        out_controls.append(
+            ControlWithAssessment(
+                id=sc["id"],
+                title=sc["title"],
+                function=sc.get("function"),
+                assessment=_serialize_assessment(a, owner) if a else None,
+                linked_docs=_load_links(db, org_id, key, sc["id"]),
+            )
+        )
+
+    return CategoryDetail(
+        id=category_id,
+        title=cat_title,
+        function=func,
+        controls=out_controls,
+    )
+
+
+# ===== Routes: Assessments (existing + used by drawer) =======================
 
 @router.get("/{key}/assessments", response_model=List[ControlWithAssessment])
 def list_assessments_for_framework(
@@ -271,7 +528,7 @@ def list_assessments_for_framework(
     fw = _framework_or_404(key)
     org_id = getattr(user, "orgId", None)
 
-    # Load all assessments for org+framework in one shot
+    # Load all assessments for org+framework
     q = db.query(OrgControlAssessment).filter(OrgControlAssessment.framework_key == key)
     if org_id is not None:
         q = q.filter(OrgControlAssessment.org_id == org_id)
@@ -294,7 +551,7 @@ def list_assessments_for_framework(
         out.append(
             ControlWithAssessment(
                 id=ctrl_id,
-                title=c["title"],
+                title=c.get("title") or ctrl_id,
                 function=c.get("function"),
                 assessment=_serialize_assessment(a, owner) if a else None,
                 linked_docs=_load_links(db, org_id, key, ctrl_id),
@@ -314,11 +571,9 @@ def upsert_control_assessment(
     _framework_or_404(key)
     org_id = getattr(user, "orgId", None)
 
-    # Validate status
     if payload.status and payload.status not in ALLOWED_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid status")
 
-    # Validate owner
     owner: Optional[PolicyUser] = None
     if payload.owner_user_id:
         owner = db.get(PolicyUser, payload.owner_user_id)
@@ -333,7 +588,6 @@ def upsert_control_assessment(
     if payload.notes is not None:
         row.notes = payload.notes.strip() or None
     if payload.evidence_links is not None:
-        # Normalize to list[str]
         links = [str(u).strip() for u in payload.evidence_links if str(u).strip()]
         row.evidence_links = json.dumps(links)
 
@@ -393,9 +647,6 @@ def link_control_to_document(
     doc = db.get(PolicyDocument, payload.document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    # Optional: enforce org match when org scoping is live
-    # if org_id is not None and doc.org_id is not None and doc.org_id != org_id:
-    #     raise HTTPException(status_code=403, detail="Document belongs to another org")
 
     link = OrgControlLink(
         org_id=org_id,
@@ -408,7 +659,6 @@ def link_control_to_document(
     try:
         db.commit()
     except Exception:
-        # Likely unique violation (already linked) — treat as idempotent
         db.rollback()
     return {"ok": True}
 
@@ -441,7 +691,6 @@ def bulk_upsert_assessments(
         if i.owner_user_id and i.owner_user_id not in owners:
             raise HTTPException(status_code=404, detail=f"Owner not found for {i.control_id}")
 
-    # Upsert each
     for i in items:
         row = _get_or_create_assessment(db, org_id, key, i.control_id)
         if i.status is not None:
@@ -469,7 +718,6 @@ def export_assessments_csv(
     fw = _framework_or_404(key)
     org_id = getattr(user, "orgId", None)
 
-    # Load all assessments
     q = db.query(OrgControlAssessment).filter(OrgControlAssessment.framework_key == key)
     if org_id is not None:
         q = q.filter(OrgControlAssessment.org_id == org_id)
@@ -478,20 +726,22 @@ def export_assessments_csv(
 
     rows = {a.control_id: a for a in q.all()}
 
-    # Preload owners
     owner_ids = {a.owner_user_id for a in rows.values() if a.owner_user_id}
     owners: Dict[int, PolicyUser] = {}
     if owner_ids:
         for u in db.query(PolicyUser).filter(PolicyUser.id.in_(owner_ids)).all():
             owners[u.id] = u  # type: ignore
 
-    # Build CSV (controls are the source of truth for listing)
     header = "id,title,function,status,owner_email,notes,evidence_links,last_reviewed_at,updated_at\n"
     data_lines: List[str] = []
     for c in fw["controls"]:
         ctrl_id = c["id"]
         a = rows.get(ctrl_id)
-        owner_email = owners[a.owner_user_id].email if a and a.owner_user_id and a.owner_user_id in owners else ""
+        owner_email = (
+            owners[a.owner_user_id].email
+            if a and a.owner_user_id and a.owner_user_id in owners
+            else ""
+        )
         notes = (a.notes or "").replace('"', '""') if a else ""
         links = ""
         if a and a.evidence_links:
@@ -503,7 +753,7 @@ def export_assessments_csv(
                 pass
         line = [
             ctrl_id,
-            c["title"].replace('"', '""'),
+            (c.get("title") or "").replace('"', '""'),
             c.get("function", "") or "",
             a.status if a and a.status else "",
             owner_email,
@@ -512,7 +762,9 @@ def export_assessments_csv(
             a.last_reviewed_at.isoformat() if a and a.last_reviewed_at else "",
             a.updated_at.isoformat() if a and a.updated_at else "",
         ]
-        data_lines.append(f'{line[0]},"{line[1]}",{line[2]},{line[3]},"{line[4]}","{line[5]}","{line[6]}",{line[7]},{line[8]}')
+        data_lines.append(
+            f'{line[0]},"{line[1]}",{line[2]},{line[3]},"{line[4]}","{line[5]}","{line[6]}",{line[7]},{line[8]}'
+        )
 
     csv = header + "\n".join(data_lines)
     filename = f"{key}_assessments.csv"
