@@ -104,11 +104,12 @@ export default function FrameworksPage() {
 
                   <div className="mt-3 flex items-center gap-2">
                     <Link
-                      href={`/frameworks/${fw.key}`}
+                      href={`/frameworks/${encodeURIComponent(fw.key)}`}
                       className="rounded border px-3 py-1.5 text-sm"
                     >
                       View controls
                     </Link>
+                    {/* Hit API origin directly to avoid Next routing → 404 */}
                     <a
                       className="rounded border px-3 py-1.5 text-sm"
                       href={`${API_BASE}/v1/frameworks/${encodeURIComponent(

@@ -1,3 +1,4 @@
+// apps/web/src/app/frameworks/[key]/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -15,7 +16,7 @@ type Control = {
   description?: string;
   family?: string;
   category?: string;
-  function?: string; // NEW: support NIST CSF (ID/PR/DE/RS/RC) when present
+  function?: string; // supports NIST CSF (ID/PR/DE/RS/RC) when present
 };
 
 type Framework = {
@@ -27,6 +28,7 @@ type Framework = {
   controls?: RawControl[] | Record<string, RawControl>;
 };
 
+// normalize one control
 function toControl(rc: any): Control {
   const id =
     rc?.id ?? rc?.control_id ?? rc?.number ?? rc?.ref ?? rc?.key ?? String(rc?.uid ?? "");
@@ -37,28 +39,28 @@ function toControl(rc: any): Control {
     description: rc?.description ?? rc?.text ?? rc?.details ?? undefined,
     family: rc?.family ?? rc?.domain ?? rc?.group ?? undefined,
     category: rc?.category ?? rc?.subcategory ?? undefined,
-    function: rc?.function ?? rc?.fn ?? undefined, // NEW
+    function: rc?.function ?? rc?.fn ?? undefined,
   };
 }
 
+// normalize array or object map → Control[]
 function normalizeControls(raw: Framework["controls"]): Control[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.map(toControl).filter((c) => c.id);
-  if (typeof raw === "object") {
-    return Object.values(raw).map(toControl).filter((c) => c.id);
-  }
+  if (typeof raw === "object") return Object.values(raw).map(toControl).filter((c) => c.id);
   return [];
 }
 
 export default function FrameworkDetailPage() {
   const params = useParams<{ key: string }>();
   const key = params?.key;
+
   const [fw, setFw] = useState<Framework | null>(null);
   const [controls, setControls] = useState<Control[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
-  const [fn, setFn] = useState<string>("any"); // NEW: function filter
+  const [fn, setFn] = useState<string>("any"); // function filter, if data provides one
 
   useEffect(() => {
     if (!key) return;
@@ -75,28 +77,27 @@ export default function FrameworkDetailPage() {
       .finally(() => setLoading(false));
   }, [key]);
 
-  // compute available functions (if any)
+  // discover available function values (e.g., ID/PR/DE/RS/RC for NIST CSF)
   const functionOptions = useMemo(() => {
     const set = new Set<string>();
     controls.forEach((c) => {
       if (c.function && c.function.trim()) set.add(c.function.trim());
     });
-    return Array.from(set).sort(); // e.g., ["DE","ID","PR","RC","RS"]
+    return Array.from(set).sort();
   }, [controls]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return controls.filter((c) => {
-      // search
-      const hay =
-        `${c.id} ${c.title} ${c.description || ""} ${c.family || ""} ${c.category || ""} ${c.function || ""}`.toLowerCase();
+      const hay = `${c.id} ${c.title} ${c.description || ""} ${c.family || ""} ${c.category || ""} ${c.function || ""}`.toLowerCase();
       const matchSearch = !needle || hay.includes(needle);
-      // function filter (only if we have any function values)
       const matchFn =
         functionOptions.length === 0 || fn === "any" || (c.function || "").toLowerCase() === fn.toLowerCase();
       return matchSearch && matchFn;
     });
   }, [controls, q, fn, functionOptions.length]);
+
+  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 
   return (
     <AppShell>
@@ -109,11 +110,11 @@ export default function FrameworkDetailPage() {
             ) : null}
           </h1>
           {fw?.description ? (
-            <p className="text-sm text-gray-700 max-w-3xl">{fw.description}</p>
+            <p className="max-w-3xl text-sm text-gray-700">{fw.description}</p>
           ) : null}
-          {fw?.tags && fw.tags.length > 0 ? (
+          {(fw?.tags ?? []).length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-1">
-              {fw.tags.map((t) => (
+              {(fw?.tags ?? []).map((t) => (
                 <span key={t} className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
                   {t}
                 </span>
@@ -122,12 +123,13 @@ export default function FrameworkDetailPage() {
           ) : null}
         </div>
         <div className="flex items-center gap-2">
-          <Link
-            href={`/v1/frameworks/${encodeURIComponent(String(key))}/export/csv`}
+          {/* Use anchor to hit API directly; avoids Next.js 404 on /v1 route */}
+          <a
+            href={`${API_BASE}/v1/frameworks/${encodeURIComponent(String(key))}/export/csv`}
             className="rounded border px-3 py-1.5 text-sm"
           >
             Export CSV
-          </Link>
+          </a>
           <Link href="/frameworks" className="rounded border px-3 py-1.5 text-sm">
             Back
           </Link>
@@ -149,7 +151,6 @@ export default function FrameworkDetailPage() {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                {/* Function filter shows only when data has functions */}
                 {functionOptions.length > 0 && (
                   <select
                     className="rounded border px-3 py-2 text-sm"
@@ -165,7 +166,6 @@ export default function FrameworkDetailPage() {
                     ))}
                   </select>
                 )}
-
                 <input
                   className="w-full max-w-xs rounded border px-3 py-2 text-sm"
                   placeholder="Search controls…"
