@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     UniqueConstraint,
+    Index,  # <- needed for FrameworkControlAssessment
 )
 from sqlalchemy.orm import relationship
 
@@ -88,7 +89,6 @@ class PolicyComment(Base):
     document = relationship("PolicyDocument", back_populates="comments")
 
 
-# --- Approvals ---
 class PolicyApproval(Base):
     __tablename__ = "policy_approvals"
 
@@ -99,7 +99,7 @@ class PolicyApproval(Base):
         nullable=False,
         index=True,
     )
-    version = Column(Integer, nullable=True)  # approve this specific version (optional)
+    version = Column(Integer, nullable=True)
     reviewer = Column(String(120), nullable=False)  # name or email
     status = Column(String(20), nullable=False, default="pending", index=True)  # pending/approved/rejected
     note = Column(Text, nullable=True)
@@ -113,16 +113,11 @@ class PolicyNotification(Base):
     __tablename__ = "policy_notifications"
 
     id = Column(Integer, primary_key=True)
-    # who should see this (map to NextAuth user.email)
-    target_email = Column(String(255), index=True, nullable=False)
+    target_email = Column(String(255), index=True, nullable=False)  # who should see this (maps to NextAuth email)
 
-    # e.g., "approval_requested", "approval_decided"
-    type = Column(String(50), nullable=False)
-
-    # short message to display in UI
+    type = Column(String(50), nullable=False)  # e.g., approval_requested, approval_decided
     message = Column(Text, nullable=False)
 
-    # useful links back to context
     document_id = Column(Integer, nullable=True)
     version = Column(Integer, nullable=True)
     approval_id = Column(Integer, nullable=True)
@@ -136,9 +131,7 @@ class PolicyUser(Base):
     id = Column(Integer, primary_key=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
     name = Column(String(255), nullable=True)
-    # Optional org scoping later
-    org_id = Column(Integer, nullable=True)
-    # Global role (still used by your auth guards today)
+    org_id = Column(Integer, nullable=True)  # optional org scoping later
     role = Column(String(50), nullable=False, default="viewer")  # owner|admin|editor|viewer|approver
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -156,7 +149,7 @@ class PolicyDocumentOwner(Base):
 
 
 # ==============================
-# Framework Assessments (NEW)
+# Framework Assessments (MVP)
 # ==============================
 
 class OrgControlAssessment(Base):
@@ -175,7 +168,7 @@ class OrgControlAssessment(Base):
     status = Column(String(30), nullable=True)
     owner_user_id = Column(Integer, ForeignKey("policy_users.id", ondelete="SET NULL"), nullable=True, index=True)
     notes = Column(Text, nullable=True)
-    evidence_links = Column(Text, nullable=True)  # JSON array (stringified)
+    evidence_links = Column(Text, nullable=True)  # JSON array as string
     last_reviewed_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -203,4 +196,38 @@ class OrgControlLink(Base):
 
     __table_args__ = (
         UniqueConstraint("org_id", "framework_key", "control_id", "document_id", "version", name="uq_org_fw_ctrl_docver"),
+    )
+
+
+class FrameworkControlAssessment(Base):
+    __tablename__ = "framework_control_assessments"
+
+    id = Column(Integer, primary_key=True)
+    framework_key = Column(String(64), index=True, nullable=False)
+    control_id = Column(String(64), index=True, nullable=False)
+
+    # points to policy_users.id
+    owner_user_id = Column(
+        Integer,
+        ForeignKey("policy_users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # allowed: not_started | in_progress | implemented | not_applicable
+    status = Column(String(32), nullable=False, default="not_started")
+
+    note = Column(Text, nullable=True)
+    evidence_url = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    owner = relationship("PolicyUser", lazy="joined")
+
+    __table_args__ = (
+        UniqueConstraint("framework_key", "control_id", name="uq_framework_control"),
+        Index("ix_fca_framework_control", "framework_key", "control_id"),
     )

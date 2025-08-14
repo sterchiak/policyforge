@@ -17,7 +17,7 @@ type Assessment = {
   owner_user_id?: number | null;
   owner_email?: string | null;
   notes?: string | null;
-  evidence_links?: string[]; // URLs
+  evidence_links?: string[];
   last_reviewed_at?: string | null;
   updated_at?: string | null;
 };
@@ -39,9 +39,9 @@ type FrameworkMeta = {
 type UserRow = { id: number; email: string; name?: string | null; role: string };
 
 type CategorySummary = {
-  id: string;
-  title: string;
-  function?: string;
+  id: string;            // e.g., "DE.AE"
+  title: string;         // e.g., "Adverse Event Analysis"
+  function?: string;     // e.g., "DETECT"
   sub_count: number;
   implemented_count: number;
 };
@@ -69,7 +69,7 @@ export default function FrameworkDetailPage() {
 
   const [meta, setMeta] = useState<FrameworkMeta | null>(null);
 
-  // Inline controls mode (legacy / non-2.0)
+  // Inline controls (non-2.0 frameworks and fallback)
   const [rows, setRows] = useState<ControlWithAssessment[]>([]);
 
   // Category mode (CSF 2.0)
@@ -78,45 +78,50 @@ export default function FrameworkDetailPage() {
   const [activeCat, setActiveCat] = useState<CategorySummary | null>(null);
   const [catDetail, setCatDetail] = useState<CategoryDetail | null>(null);
 
-  // Common bits
+  // Common
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // filters (used by inline controls table)
+  // Filters (inline table)
   const [q, setQ] = useState("");
   const [fn, setFn] = useState<string>("any");
   const [statusFilter, setStatusFilter] = useState<string>("any");
   const [mineOnly, setMineOnly] = useState(false);
 
-  // local drafts (used by inline table)
+  // Local drafts (inline table)
   const [draftNotes, setDraftNotes] = useState<Record<string, string>>({});
   const [draftEvidence, setDraftEvidence] = useState<Record<string, string>>({});
 
   const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
 
-  // --- meta
+  // Close any open drawer if the framework changes
+  useEffect(() => {
+    setDrawerOpen(false);
+    setActiveCat(null);
+    setCatDetail(null);
+  }, [key]);
+
+  // Meta
   useEffect(() => {
     if (!key) return;
     setErr(null);
     api
       .get<{ key: string; name: string; publisher?: string }>(`/v1/frameworks/${key}`)
-      .then((r) => {
-        setMeta({ key: r.data.key, name: r.data.name, publisher: r.data.publisher });
-      })
+      .then((r) => setMeta({ key: r.data.key, name: r.data.name, publisher: r.data.publisher }))
       .catch((e: any) => setErr(e?.response?.data?.detail || e.message));
   }, [key]);
 
-  // --- try loading categories (if CSF 2.0, endpoint will exist/populate)
+  // Categories (CSF 2.0 only; others return [])
   useEffect(() => {
     if (!key) return;
     api
       .get<CategorySummary[]>(`/v1/frameworks/${key}/categories`)
       .then((r) => setCats(Array.isArray(r.data) ? r.data : []))
-      .catch(() => setCats([])); // non-2.0 frameworks will still get []
+      .catch(() => setCats([]));
   }, [key]);
 
-  // --- inline controls (fallback for non-2.0, and still useful if you want)
+  // Inline controls list (always available)
   useEffect(() => {
     if (!key) return;
     setLoading(true);
@@ -126,7 +131,6 @@ export default function FrameworkDetailPage() {
       .then((r) => {
         const data = Array.isArray(r.data) ? r.data : [];
         setRows(data);
-        // init drafts
         const n: Record<string, string> = {};
         const ev: Record<string, string> = {};
         data.forEach((c) => {
@@ -141,7 +145,7 @@ export default function FrameworkDetailPage() {
       .finally(() => setLoading(false));
   }, [key]);
 
-  // users for owner pickers
+  // Users for owner pickers
   useEffect(() => {
     api
       .get<UserRow[]>("/v1/users")
@@ -149,7 +153,7 @@ export default function FrameworkDetailPage() {
       .catch(() => setUsers([]));
   }, []);
 
-  // function options discovered from rows
+  // Function options for the inline table
   const functionOptions = useMemo(() => {
     const set = new Set<string>();
     rows.forEach((c) => c.function && set.add(c.function.trim()));
@@ -174,7 +178,7 @@ export default function FrameworkDetailPage() {
     return users.find((u) => u.id === id);
   }
 
-  // --- inline quick saves
+  // Quick saves (inline + drawer share these)
   const quickSaveStatus = async (control_id: string, status: Assessment["status"]) => {
     try {
       await api.patch<Assessment>(`/v1/frameworks/${key}/controls/${encodeURIComponent(control_id)}/assessment`, {
@@ -187,6 +191,16 @@ export default function FrameworkDetailPage() {
             : r
         )
       );
+      if (catDetail) {
+        setCatDetail({
+          ...catDetail,
+          controls: catDetail.controls.map((c) =>
+            c.id === control_id
+              ? { ...c, assessment: { ...(c.assessment || { control_id }), status: status || undefined } }
+              : c
+          ),
+        });
+      }
     } catch {}
   };
 
@@ -210,7 +224,6 @@ export default function FrameworkDetailPage() {
             : r
         )
       );
-      // Also update drawer if it's open and this control is visible there
       if (catDetail) {
         setCatDetail({
           ...catDetail,
@@ -259,16 +272,19 @@ export default function FrameworkDetailPage() {
     } catch {}
   };
 
-  // --- Drawer helpers
-  const openDrawer = async (cat: CategorySummary) => {
+  // Drawer helpers —— bind strictly by id to avoid “0/undefined” bugs
+  const openDrawerById = async (catId?: string) => {
+    if (!key || !catId) return; // guard
+    const cat = cats.find((c) => c.id === catId) || null;
     setActiveCat(cat);
     setDrawerOpen(true);
     setErr(null);
+    setCatDetail(null);
     try {
-      const r = await api.get<CategoryDetail>(`/v1/frameworks/${key}/categories/${encodeURIComponent(cat.id)}`);
+      const r = await api.get<CategoryDetail>(`/v1/frameworks/${key}/categories/${encodeURIComponent(catId)}`);
       setCatDetail(r.data);
     } catch (e: any) {
-      setErr(e?.response?.data?.detail || e.message);
+      setErr(e?.response?.data?.detail || e.message || "Category not found");
       setCatDetail(null);
     }
   };
@@ -284,8 +300,7 @@ export default function FrameworkDetailPage() {
   const drawerQuickAssignOwner = (ctrlId: string, ownerId?: number | null) =>
     quickAssignOwner(ctrlId, ownerId);
 
-  // --- Render
-  const isCategoryMode = cats.length > 0; // CSF 2.0
+  const isCategoryMode = cats.length > 0;
 
   return (
     <AppShell>
@@ -313,7 +328,6 @@ export default function FrameworkDetailPage() {
         </div>
       </div>
 
-      {/* Category Mode (CSF 2.0): list categories with Manage button */}
       {isCategoryMode ? (
         <>
           <Card title="Categories">
@@ -343,7 +357,7 @@ export default function FrameworkDetailPage() {
                         <td className="py-2 pr-4">{c.implemented_count}</td>
                         <td className="py-2">
                           <button
-                            onClick={() => openDrawer(c)}
+                            onClick={() => openDrawerById(c.id)}
                             className="rounded border px-3 py-1 text-sm"
                           >
                             Manage
@@ -357,14 +371,9 @@ export default function FrameworkDetailPage() {
             )}
           </Card>
 
-          {/* Right-side Drawer */}
           {drawerOpen && (
             <>
-              <div
-                className="fixed inset-0 z-40 bg-black/30"
-                onClick={closeDrawer}
-                aria-hidden="true"
-              />
+              <div className="fixed inset-0 z-40 bg-black/30" onClick={closeDrawer} aria-hidden="true" />
               <aside
                 className="fixed right-0 top-0 z-50 h-full w-full max-w-3xl overflow-y-auto border-l bg-white p-4 shadow-xl"
                 role="dialog"
@@ -376,9 +385,7 @@ export default function FrameworkDetailPage() {
                     <h2 className="text-xl font-semibold text-gray-900">
                       {activeCat?.title}{" "}
                       {activeCat?.function ? (
-                        <span className="text-sm font-normal text-gray-600">
-                          ({activeCat.function})
-                        </span>
+                        <span className="text-sm font-normal text-gray-600">({activeCat.function})</span>
                       ) : null}
                     </h2>
                   </div>
@@ -417,10 +424,7 @@ export default function FrameworkDetailPage() {
                                   className="rounded border px-2 py-1"
                                   value={a.status || ""}
                                   onChange={(e) =>
-                                    drawerQuickSaveStatus(
-                                      ctrl.id,
-                                      (e.target.value || undefined) as AssessmentStatus
-                                    )
+                                    drawerQuickSaveStatus(ctrl.id, (e.target.value || undefined) as AssessmentStatus)
                                   }
                                 >
                                   {STATUS_OPTS.map((o) => (
@@ -453,14 +457,12 @@ export default function FrameworkDetailPage() {
                                 <textarea
                                   className="h-16 w-64 max-w-[28rem] rounded border px-2 py-1"
                                   placeholder="Notes…"
-                                  defaultValue={a.notes || ""} // drawer uses onBlur save
+                                  defaultValue={a.notes || ""}
                                   onBlur={async (e) => {
                                     const notes = e.target.value;
                                     try {
                                       await api.patch<Assessment>(
-                                        `/v1/frameworks/${key}/controls/${encodeURIComponent(
-                                          ctrl.id
-                                        )}/assessment`,
+                                        `/v1/frameworks/${key}/controls/${encodeURIComponent(ctrl.id)}/assessment`,
                                         { notes }
                                       );
                                     } catch {}
@@ -471,17 +473,12 @@ export default function FrameworkDetailPage() {
                                 <input
                                   className="w-64 max-w-[28rem] rounded border px-2 py-1"
                                   placeholder="https://wiki/page, https://jira/PROJ-1"
-                                  defaultValue={(a.evidence_links || []).join(", ")} // drawer uses onBlur save
+                                  defaultValue={(a.evidence_links || []).join(", ")}
                                   onBlur={async (e) => {
-                                    const links = e.target.value
-                                      .split(/[, \n]+/)
-                                      .map((s) => s.trim())
-                                      .filter(Boolean);
+                                    const links = e.target.value.split(/[, \n]+/).map((s) => s.trim()).filter(Boolean);
                                     try {
                                       await api.patch<Assessment>(
-                                        `/v1/frameworks/${key}/controls/${encodeURIComponent(
-                                          ctrl.id
-                                        )}/assessment`,
+                                        `/v1/frameworks/${key}/controls/${encodeURIComponent(ctrl.id)}/assessment`,
                                         { evidence_links: links }
                                       );
                                     } catch {}
@@ -500,21 +497,16 @@ export default function FrameworkDetailPage() {
           )}
         </>
       ) : (
-        // Inline Controls Mode (non-2.0, keeps your original UX)
+        // Inline Controls Mode
         <Card>
           {err && <p className="mb-3 text-sm text-red-600">{err}</p>}
           {loading ? (
             <p className="text-sm text-gray-700">Loading…</p>
           ) : (
             <>
-              {/* Filters */}
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 {functionOptions.length > 0 && (
-                  <select
-                    className="rounded border px-3 py-2 text-sm"
-                    value={fn}
-                    onChange={(e) => setFn(e.target.value)}
-                  >
+                  <select className="rounded border px-3 py-2 text-sm" value={fn} onChange={(e) => setFn(e.target.value)}>
                     <option value="any">Function: Any</option>
                     {functionOptions.map((opt) => (
                       <option key={opt} value={opt}>
@@ -578,16 +570,12 @@ export default function FrameworkDetailPage() {
                           <tr key={ctrl.id}>
                             <td className="py-2 pr-4 font-mono">{ctrl.id}</td>
                             <td className="py-2 pr-4 font-medium">{ctrl.title}</td>
-                            {functionOptions.length > 0 && (
-                              <td className="py-2 pr-4">{ctrl.function || "—"}</td>
-                            )}
+                            {functionOptions.length > 0 && <td className="py-2 pr-4">{ctrl.function || "—"}</td>}
                             <td className="py-2 pr-4">
                               <select
                                 className="rounded border px-2 py-1"
                                 value={a.status || ""}
-                                onChange={(e) =>
-                                  quickSaveStatus(ctrl.id, (e.target.value || undefined) as Assessment["status"])
-                                }
+                                onChange={(e) => quickSaveStatus(ctrl.id, (e.target.value || undefined) as Assessment["status"])}
                               >
                                 {STATUS_OPTS.map((opt) => (
                                   <option key={opt.value} value={opt.value}>
@@ -601,10 +589,7 @@ export default function FrameworkDetailPage() {
                                 className="w-56 max-w-[18rem] truncate rounded border px-2 py-1"
                                 value={a.owner_user_id ?? ""}
                                 onChange={(e) =>
-                                  quickAssignOwner(
-                                    ctrl.id,
-                                    e.target.value === "" ? null : Number(e.target.value)
-                                  )
+                                  quickAssignOwner(ctrl.id, e.target.value === "" ? null : Number(e.target.value))
                                 }
                               >
                                 <option value="">Unassigned</option>
@@ -620,9 +605,7 @@ export default function FrameworkDetailPage() {
                                 className="h-16 w-64 max-w-[28rem] rounded border px-2 py-1"
                                 placeholder="Notes…"
                                 value={draftNotes[ctrl.id] ?? ""}
-                                onChange={(e) =>
-                                  setDraftNotes((d) => ({ ...d, [ctrl.id]: e.target.value }))
-                                }
+                                onChange={(e) => setDraftNotes((d) => ({ ...d, [ctrl.id]: e.target.value }))}
                               />
                             </td>
                             <td className="py-2 pr-4">
@@ -630,17 +613,12 @@ export default function FrameworkDetailPage() {
                                 className="w-64 max-w-[28rem] rounded border px-2 py-1"
                                 placeholder="e.g. https://wiki/page, https://jira/PROJ-1"
                                 value={draftEvidence[ctrl.id] ?? ""}
-                                onChange={(e) =>
-                                  setDraftEvidence((d) => ({ ...d, [ctrl.id]: e.target.value }))
-                                }
+                                onChange={(e) => setDraftEvidence((d) => ({ ...d, [ctrl.id]: e.target.value }))}
                               />
                               <div className="mt-1 text-[10px] text-gray-500">Separate with commas or spaces</div>
                             </td>
                             <td className="py-2">
-                              <button
-                                onClick={() => saveNotesEvidence(ctrl.id)}
-                                className="rounded border px-2 py-1 text-xs"
-                              >
+                              <button onClick={() => saveNotesEvidence(ctrl.id)} className="rounded border px-2 py-1 text-xs">
                                 Save
                               </button>
                             </td>
