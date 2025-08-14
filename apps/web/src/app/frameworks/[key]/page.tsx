@@ -169,10 +169,6 @@ export default function FrameworkDetailPage() {
     });
   }, [rows, q, fn, statusFilter, mineOnly, functionOptions.length, myEmail]);
 
-  function userLabel(u?: UserRow | null) {
-    if (!u) return "Unassigned";
-    return u.name ? `${u.name} (${u.email})` : u.email;
-  }
   function userById(id?: number | null): UserRow | undefined {
     if (!id) return undefined;
     return users.find((u) => u.id === id);
@@ -378,7 +374,12 @@ export default function FrameworkDetailPage() {
                   <div>
                     <div className="text-xs uppercase text-gray-500">{activeCat?.id}</div>
                     <h2 className="text-xl font-semibold text-gray-900">
-                      {activeCat?.title} {activeCat?.function ? <span className="text-sm font-normal text-gray-600">({activeCat.function})</span> : null}
+                      {activeCat?.title}{" "}
+                      {activeCat?.function ? (
+                        <span className="text-sm font-normal text-gray-600">
+                          ({activeCat.function})
+                        </span>
+                      ) : null}
                     </h2>
                   </div>
                   <button onClick={closeDrawer} className="rounded border px-3 py-1 text-sm">
@@ -416,7 +417,10 @@ export default function FrameworkDetailPage() {
                                   className="rounded border px-2 py-1"
                                   value={a.status || ""}
                                   onChange={(e) =>
-                                    drawerQuickSaveStatus(ctrl.id, (e.target.value || undefined) as AssessmentStatus)
+                                    drawerQuickSaveStatus(
+                                      ctrl.id,
+                                      (e.target.value || undefined) as AssessmentStatus
+                                    )
                                   }
                                 >
                                   {STATUS_OPTS.map((o) => (
@@ -449,12 +453,14 @@ export default function FrameworkDetailPage() {
                                 <textarea
                                   className="h-16 w-64 max-w-[28rem] rounded border px-2 py-1"
                                   placeholder="Notes…"
-                                  defaultValue={a.notes || ""}
+                                  defaultValue={a.notes || ""} // drawer uses onBlur save
                                   onBlur={async (e) => {
                                     const notes = e.target.value;
                                     try {
                                       await api.patch<Assessment>(
-                                        `/v1/frameworks/${key}/controls/${encodeURIComponent(ctrl.id)}/assessment`,
+                                        `/v1/frameworks/${key}/controls/${encodeURIComponent(
+                                          ctrl.id
+                                        )}/assessment`,
                                         { notes }
                                       );
                                     } catch {}
@@ -465,7 +471,7 @@ export default function FrameworkDetailPage() {
                                 <input
                                   className="w-64 max-w-[28rem] rounded border px-2 py-1"
                                   placeholder="https://wiki/page, https://jira/PROJ-1"
-                                  defaultValue={(a.evidence_links || []).join(", ")}
+                                  defaultValue={(a.evidence_links || []).join(", ")} // drawer uses onBlur save
                                   onBlur={async (e) => {
                                     const links = e.target.value
                                       .split(/[, \n]+/)
@@ -473,7 +479,9 @@ export default function FrameworkDetailPage() {
                                       .filter(Boolean);
                                     try {
                                       await api.patch<Assessment>(
-                                        `/v1/frameworks/${key}/controls/${encodeURIComponent(ctrl.id)}/assessment`,
+                                        `/v1/frameworks/${key}/controls/${encodeURIComponent(
+                                          ctrl.id
+                                        )}/assessment`,
                                         { evidence_links: links }
                                       );
                                     } catch {}
@@ -566,8 +574,6 @@ export default function FrameworkDetailPage() {
                     <tbody className="divide-y">
                       {filtered.map((ctrl) => {
                         const a = ctrl.assessment || { control_id: ctrl.id };
-                        const owner = users.find((u) => u.id === (a.owner_user_id ?? 0));
-
                         return (
                           <tr key={ctrl.id}>
                             <td className="py-2 pr-4 font-mono">{ctrl.id}</td>
